@@ -4,9 +4,10 @@ from Crypto.Cipher import AES
 import base64
 import hashlib
 import random
+import string
 import time
 import os
-import string
+import sys
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 # host = input('enter IP of server') #192.168.43.212
@@ -18,10 +19,13 @@ sock.connect((host,port))
 def DHK_exc_c(key,sock):
 	ar=(sock.recv(1024).rstrip("\n")).split(',') #5-2
 	sharedPrime,sharedBase=int(ar[0]),int(ar[1])
-	A = (sharedBase**key) % sharedPrime
-	sock.send(str(A)) #6-1
-	B=long(sock.recv(1024).rstrip("\n")) #7-2
-	shared_key=(B ** key) % sharedPrime
+	try:
+		A = (sharedBase**key) % sharedPrime
+		sock.send(str(A)) #6-1
+		B=long(sock.recv(1024).rstrip("\n")) #7-2
+		shared_key=(B ** key) % sharedPrime
+	except ValueError:
+		print ("Error Occured!\nTry again")
 	return shared_key
 
 def enc_dec(q,key,string):
@@ -137,10 +141,8 @@ while __name__=="__main__":
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #10-2
 		sock.send(enc_dec('e',shared_key,str(n_c)+","+str(e_c))) #11-1
 		n_s,e_s=int(ar[0]),int(ar[1])
-		# print (n_s,e_s)
 
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #12-2
-		# print(dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])))
 		if not dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])):
 			print ("ERROR : Occured During Signature Verification")
 			sock.close()
@@ -152,10 +154,16 @@ while __name__=="__main__":
 		print ("Operation Successful!\nStarting Data Transmission...")
 
 	while True:
-		time.sleep(1)
-		s=str(d_id)+"   "+str(time.time())+" "+str(random.randint(1,300))
-		print ("data to be transmitted: "+s+" length is "+str(len(s)))
-		s=enc_dec("e",shared_key,s)
-		print ("data transmitted after encryption: "+s)
-		sock.send(s)
-		time.sleep(4)
+		try:
+			time.sleep(2.5)
+
+			s=str(d_id)+"   "+str(time.time())+" "+str(random.randint(1,300))
+			print ("data to be transmitted: "+s+" length is "+str(len(s)))
+			s=enc_dec("e",shared_key,s)
+			print ("data transmitted after encryption: "+s)
+			sock.send(s)
+
+			time.sleep(2.5)
+		except KeyboardInterrupt:
+			print ("\nConnection to The Server is Terminated!")
+			sys.exit()
