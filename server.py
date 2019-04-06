@@ -37,6 +37,36 @@ s.listen(10)
 print ("port => "+str(s.getsockname()[1]))
 print ("listening...\n")
 
+if __name__=="__main__":
+	#Intializing 4 Users 
+	u=[[23,1234],[24,12345],[25,4321],[26,54321]]
+	con=sqlite3.connect('data_base.db')
+	c = con.cursor()
+	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+	r = []
+	for i in c.fetchall():
+		r.append(i[0])
+	if "DEVICES" not in r:
+		c.execute("""CREATE TABLE DEVICES (
+					D_ID INTEGER PRIMARY KEY,
+					D_KEY INTEGER,
+					D_STAT BOOLEAN
+					)""")
+		for i in u:
+			c.execute("INSERT INTO DEVICES (D_ID, D_KEY, D_STAT) values (?, ?, ?)",(i[0],i[1],0))
+	if "LEDGER" not in r:
+		c.execute("""CREATE TABLE LEDGER (
+					SL_NO INTEGER PRIMARY KEY AUTOINCREMENT,
+					D_ID INTEGER,
+					START_TIME TIMESTAMP,
+					STOP_TIME TIMESTAMP,
+					UNIT_SLAB FLOAT,
+					HASH TEXT
+					)""")
+	con.commit()
+	con.close()	
+
+
 def d_verify(id,key):
 	con=sqlite3.connect('data_base.db')
 	c = con.cursor()
@@ -65,6 +95,13 @@ def d_stat_up(id,val):
 	con.close()
 	return True
 
+def d_add(d_id,start_time,stop_time,unit_slab,has):
+	con=sqlite3.connect('data_base.db')
+	c = con.cursor()
+	c.execute("INSERT INTO LEDGER (D_ID, START_TIME, STOP_TIME, UNIT_SLAB, HASH) values (?, ?, ?, ?, ?)",(d_id,start_time,stop_time,unit_slab,has))
+	con.commit()
+	con.close()
+
 def verify(conn):
 	ar=(conn.recv(1024).rstrip("\n\r")).split(',') #2-2
 	print ("Device ID => "+str(ar[0])+"\nDevice Key => "+str(ar[-1]))
@@ -77,7 +114,7 @@ def verify(conn):
 		connections.pop(id)
 		return ([False,int(ar[0])])	
 
-def DHK_exc_s(key,conn):
+def DHK_exc_s(key,conn,d_id):
 	sharedPrime=9999999900000001 # a random prime to be chosen
 	sharedBase=102124190 # a random number
 	conn.send(str(sharedPrime)+","+str(sharedBase)) #5-1
@@ -90,6 +127,7 @@ def DHK_exc_s(key,conn):
 		print "Connections List : ",connections
 		conn.close()
 		print ("Connection with "+str(d_id)+" is Closed")
+		# print ('Connection Closed')
 	conn.send(str(B)) #7-1
 	shared_key = (A**key) % sharedPrime
 	return shared_key
@@ -139,7 +177,7 @@ def dig_sig_para():
 	return (n,e,d)
 
 def dig_sig_gen(q,d_e,n,string,sg=0):
-	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 4 bit hash
+	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 3 bit hash
 	if q=="g":
 		sg_cal = (h_val**d_e) % n
 		# print (h_val)
@@ -150,13 +188,20 @@ def dig_sig_gen(q,d_e,n,string,sg=0):
 		if h_val==h_cal : return True
 		else : return False
 
+def close_conn(d_id,id):
+	print ("Token Verification : Failed\nConnection with "+str(d_id)+" is Closed")
+	d_stat_up(d_id,0)
+	connections.pop(id)
+	print "Connections List : ",connections
+	conn.close()
+
 def client_thread(conn,id):
 	d_id,key = '',''
-	f,e,r = 0,0,0 # flags
+	f=0# flags
 	shared_key,serverSecret = '',random.randint(5,20) # used in Diffie-hellman
 	n_s,e_s,d = 0,0,0
 	n_c,e_c = 0,0 # RSA Signature Parameters of Client
-
+	old_hash_value,t_id='abc',0 # To Be Used During Reading Verification
 	conn.send('C') #1-1
 	while True:
 		if f==0:
@@ -173,7 +218,7 @@ def client_thread(conn,id):
 			# Key exchange using Diffie-Helman
 			kc=0
 			while kc==0:
-				shared_key=str(DHK_exc_s(serverSecret,conn))
+				shared_key=str(DHK_exc_s(serverSecret,conn,d_id))
 				# kl=len(shared_key)
 				if len(shared_key)==16:
 					#checking key symmetricity
@@ -187,6 +232,7 @@ def client_thread(conn,id):
 					else:
 						print("Key Validation Failed")
 			print ("Shared Key => "+str(shared_key))
+			print ("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****")
 
 			#Computing parameters for generating digital signature using RSA
 			print ("Generating Parameters for Digital Signature...(Wait)")
@@ -207,18 +253,28 @@ def client_thread(conn,id):
 			#Verifying the Signature of Client
 			ar=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n")).split(',') #13-2
 			# print(dig_sig_gen('v',e_c,n_c,ar[0],sg=int(ar[1])))
-			if dig_sig_gen('v',e_c,n_c,ar[0],sg=int(ar[1])):
+			if dig_sig_gen('v',e_c,n_c,ar[0],int(ar[1])):
 				if d_stat_up(d_id,1):
 					f=1
+					print("\n")
 		else:
-			data=conn.recv(1024).rstrip("\n\r")
-			print ("data received: "+str(data))
-			data=enc_dec("d",shared_key,data)
-			print ("data retrieved after decrypting: "+data)
-
-
-
-
+			#Validating Before Data Transmission
+			data=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n\r")) #a-2
+			print("Token ID Received from Client => "+data)
+			try:
+				n_t_id=int(data)
+			except:
+				conn.send(enc_dec('e',shared_key,"Error Occured!\nToken Verification : Failed")) #b-1
+				close_conn(d_id,id)
+				break
+			if t_id>=n_t_id:
+				conn.send(enc_dec('e',shared_key,"Error Occured!\nToken Verification : Failed")) #b-1
+				close_conn(d_id,id)
+				break
+			print ("Token Verification : Successfully \nSending Old Hash => "+old_hash_value)
+			conn.send(enc_dec('e',shared_key,old_hash_value)) #b-1
+			
+			data=conn.recv(1024).rstrip("\n\r") #value receiving #c-1
 			if not data:
 				print ("Connection with "+str(d_id)+" is Closed")
 				d_stat_up(d_id,0)
@@ -226,6 +282,24 @@ def client_thread(conn,id):
 				print "Connections List : ",connections
 				conn.close()
 				break
+			print ("Data Received: "+str(data))
+			data=enc_dec("d",shared_key,data)
+			print ("Data Retrieved After Decrypting: "+data)
+			data=data.split('|')
+			if (dig_sig_gen('v',e_c,n_c,data[0],int(data[1]))) and (n_t_id==int(data[0].split(',')[0])): # signature and token validation
+				print ("Token and Signature Verification : Successfully")
+				# ****** Put data into DB
+				t=data[0].split(',')
+			else:
+				close_conn(d_id,id)
+
+			#generating (16 bit) New Hash Value = Hash(Present readings + Old Hash Value)
+			new_hash_value = int(hashlib.sha256((data[0]+old_hash_value).encode('utf-8')).hexdigest(), 16) % 10**16
+			print ("Sending New Hash => "+str(new_hash_value)+"\n")
+			conn.send(enc_dec('e',shared_key,str(new_hash_value)+"|"+str(dig_sig_gen('g',d,n_s,str(new_hash_value))))) #d-1
+			d_add(d_id,t[1],t[2],t[3],new_hash_value)
+			print ('Logging the Tuple into The DB')
+			old_hash_value,t_id=str(new_hash_value),n_t_id
 	return
 
 
@@ -233,10 +307,8 @@ while __name__=="__main__":
 	try:
 		conn , addr = s.accept()
 		print('connected to:' +addr[0] +":"+str(addr[1]))
-
 		id = random.randint(1,9999999999)
 		start_new_thread(client_thread,(conn,id))
-
 		connections.update({id:conn})
 		print "Connections List : ",connections
 	except KeyboardInterrupt:
