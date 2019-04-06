@@ -75,7 +75,7 @@ def dig_sig_para():
 	return (n,e,d)
 
 def dig_sig_gen(q,d_e,n,string,sg=0):
-	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 4 bit hash
+	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 3 bit hash
 	if q=="g":
 		sg_cal = (h_val**d_e) % n
 		# print (h_val)
@@ -87,7 +87,7 @@ def dig_sig_gen(q,d_e,n,string,sg=0):
 		else : return False
 	
 while __name__=="__main__":
-	f,e,r=0,0,0 # flags
+	f=0 # flags
 	shared_key,clientSecret ="",random.randint(5,20) # used in Diffie-hellman
 	n_c,e_c,d=0,0,0
 	n_s,e_s=0,0
@@ -132,7 +132,7 @@ while __name__=="__main__":
 				else:
 					print("Key Validation Failed")		
 		print ("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
-
+		print ("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****")
 		print ("Generating Parameters for Digital Signature...(Wait)")
 		ti=time.time()
 		n_c,e_c,d = dig_sig_para()
@@ -151,19 +151,50 @@ while __name__=="__main__":
 		sg=dig_sig_gen('g',d,n_c,vs)
 		sock.send(enc_dec('e',shared_key,vs+","+str(sg))) #13-1
 
+		print ("Transmission Data Format => start_time,stop_time,unit_slab,signature")
 		print ("Operation Successful!\nStarting Data Transmission...")
-
+		print("\n")
+		old_hash_value,n_t_id='abc',1 # to be fetched from the local DB(Local Ledger)
+		start_time,stop_time,unit_slab=time.time(),0,0
 	while True:
 		try:
-			time.sleep(2.5)
+			print("Sending New Token ID => "+str(n_t_id))
+			sock.send(enc_dec("e",shared_key,str(n_t_id))) #a-1
+			data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")) #b-2
+			print ("Received Hash Value => "+data)
+			if old_hash_value!=data:
+				print("Old Hash Verification : Failed")
+				break
+			print ("Old Hash Verification : Successful")	
 
-			s=str(d_id)+"   "+str(time.time())+" "+str(random.randint(1,300))
-			print ("data to be transmitted: "+s+" length is "+str(len(s)))
-			s=enc_dec("e",shared_key,s)
-			print ("data transmitted after encryption: "+s)
-			sock.send(s)
+			# Data Reading
+			unit_slab=random.randint(1,50) #to be received from meter
+			time.sleep(random.randint(1,5))#function will go here
+			stop_time=time.time()
 
-			time.sleep(2.5)
+			# Data Sending
+			s=str(n_t_id)+','+str(start_time)+','+str(stop_time)+','+str(unit_slab)
+			data=s+'|'+str(dig_sig_gen('g',d,n_c,s))
+			print("Data to be Transmitted => "+data)
+			data=enc_dec("e",shared_key,data)
+			print ("Transmitted Cypher : "+data)
+			sock.send(data) #c-1
+
+			new_hash_value = int(hashlib.sha256((s+old_hash_value).encode('utf-8')).hexdigest(), 16) % 10**16
+
+			data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")) #d-2
+			data=data.split('|')
+			print ('Received New Hash Value => '+data[0])
+
+			if (dig_sig_gen('v',e_s,n_s,data[0],int(data[1]))) and (str(new_hash_value)==data[0]):
+				print ("Signature and New Hash Verification : Successful")
+				old_hash_value,n_t_id=data[0],n_t_id+1
+
+			print('Delay Time => '+str(stop_time-start_time)+"\n")
+			start_time=stop_time
+
+
 		except KeyboardInterrupt:
 			print ("\nConnection to The Server is Terminated!")
-			sys.exit()
+			sys.exit()	
+
