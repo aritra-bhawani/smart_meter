@@ -7,6 +7,7 @@ import random
 import string
 import time
 import os
+import sys
 import sqlite3
 
 def get_ip():
@@ -43,7 +44,7 @@ def d_verify(id,key):
 	result = c.fetchall()
 	con.commit()
 	con.close()
-	print ("| Initial Device Status in DB | ",result)
+	print "Initial Device Status in DB : ",result
 	if len(result)==0:
 		return ([False,"No Device Found By This ID!\nTry again."])
 	else:
@@ -59,7 +60,7 @@ def d_stat_up(id,val):
 	c = con.cursor()
 	c.execute("UPDATE DEVICES SET D_STAT = ? WHERE D_ID = ?", (val,id))
 	c.execute("SELECT * FROM DEVICES WHERE D_ID=?",(id,))
-	print ("| Updated Device Status in DB | ",c.fetchall())
+	print "Updated Device Status in DB : ",c.fetchall()
 	con.commit()
 	con.close()
 	return True
@@ -73,14 +74,22 @@ def verify(conn):
 		return ([True,int(ar[0])])
 	else:
 		conn.send(result[1])#3-1
+		connections.pop(id)
 		return ([False,int(ar[0])])	
 
 def DHK_exc_s(key,conn):
 	sharedPrime=9999999900000001 # a random prime to be chosen
 	sharedBase=102124190 # a random number
 	conn.send(str(sharedPrime)+","+str(sharedBase)) #5-1
-	A=long(conn.recv(1024).rstrip("\n\r")) #6-2
-	B=(sharedBase ** key) % sharedPrime 
+	try:
+		A=long(conn.recv(1024).rstrip("\n\r")) #6-2
+		B=(sharedBase ** key) % sharedPrime 
+	except ValueError:
+		connections.pop(id)
+		print ("Error Occured!")
+		print "Connections List : ",connections
+		conn.close()
+		print ("Connection with "+str(d_id)+" is Closed")
 	conn.send(str(B)) #7-1
 	shared_key = (A**key) % sharedPrime
 	return shared_key
@@ -206,21 +215,30 @@ def client_thread(conn,id):
 			print ("data received: "+str(data))
 			data=enc_dec("d",shared_key,data)
 			print ("data retrieved after decrypting: "+data)
-			
+
+
+
+
 			if not data:
-				d_stat_up(d_id,0)
 				print ("Connection with "+str(d_id)+" is Closed")
+				d_stat_up(d_id,0)
 				connections.pop(id)
+				print "Connections List : ",connections
 				conn.close()
 				break
 	return
 
+
 while __name__=="__main__":
-	conn , addr = s.accept()
-	print('connected to:' +addr[0] +":"+str(addr[1]))
+	try:
+		conn , addr = s.accept()
+		print('connected to:' +addr[0] +":"+str(addr[1]))
 
-	id = random.randint(1,9999999999)
-	start_new_thread(client_thread,(conn,id))
+		id = random.randint(1,9999999999)
+		start_new_thread(client_thread,(conn,id))
 
-	connections.update({id:conn})
-	print(connections)
+		connections.update({id:conn})
+		print "Connections List : ",connections
+	except KeyboardInterrupt:
+		print ("\nServer is Stopped!")
+		sys.exit()	
