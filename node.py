@@ -8,6 +8,7 @@ import string
 import time
 import os
 import sys
+import serial
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 # host = input('enter IP of server') #192.168.43.212
@@ -168,9 +169,13 @@ while __name__=="__main__":
 			print ("Old Hash Verification : Successful")	
 
 			# Data Reading
-			unit_slab=random.randint(1,50) #to be received from meter
-			time.sleep(random.randint(1,5))#function will go here
-			stop_time=time.time()
+                        while True:
+                                v=ser.readline().rstrip("\n\r")
+                                if v!='':
+                                        unit_slab=v
+                                        break
+                        print ("Energy Consumption Measured in this Slab => "+str(unit_slab))
+                        stop_time=time.time()
 
 			# Data Sending
 			s=str(n_t_id)+','+str(start_time)+','+str(stop_time)+','+str(unit_slab)
