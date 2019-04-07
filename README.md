@@ -37,3 +37,5 @@ The node starts sending the value to the Server in the following pattern:
 - Node validates the hash and send the value obtained from the sensor along with other parameters and Signature and calculate the new hash value
 - The server validates the signature, stores it into the LEDGER table of the DB and generate a new hash and sends it to the node
 - Node validates the hash value and compares with locally calculated hash if matches then generate a new token ID and the cycle continues.
+
+![alt text](https://i.postimg.cc/Px3HjKJ4/Screenshot-2019-04-07-at-10-00-39-PM.png)
