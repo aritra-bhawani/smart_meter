@@ -1,0 +1,14 @@
+# Smart Meter
+<i> This project is mainly focused to build a Smart Meter using the concepts of IoT, Cryptography and Block-chain technology.
+
+## Introduction:
+> With the advancement of IoT based devices along with the increasing counts, the requirement of a smart metering system is inevitable. While connecting them to the cloud, we should also mind the security and transparency of the entire network. The secured aspects can be handled by different cryptographic methods. On the other hand, the transparency of every billing cycle can be maintained by Block-chain technology which in turn will be supported by the increasing number of IoT bases devices(Nodes).
+
+The prototype of the meter (`node.py`) is running on Raspberry pi, which is supported by the Arduino to take the analog reading from the ACS712 current sensor and serially transmit the data to the Raspberry pi, due to the absence of analog GPIO pins on it.
+
+### Brief Description:
+This project focuses mainly on four stands:
+* Accurate Value Measurement - here ACS712 is interfaced with Arduino to measure the voltage in analog format and calculate the corresponding energy consumption and send the value to the Raspberry pi.
+* IoT 
+* Cryptography
+* Block-chain
