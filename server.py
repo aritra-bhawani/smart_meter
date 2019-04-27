@@ -88,13 +88,13 @@ def verify(conn,n_id):
 		connections.pop(n_id)
 		return ([False,int(ar[0])])	
 
-def DHK_exc_s(key,conn,d_id,n_id):
+def DHK_exc_s(serverSecret,conn,d_id,n_id):
 	sharedPrime=9999999900000001 # a random prime to be chosen
 	sharedBase=random.randint(100000000,999999999) #102124190 # a random number
 	conn.send(str(sharedPrime)+","+str(sharedBase)) #5-1
 	try:
 		A=long(conn.recv(1024).rstrip("\n\r")) #6-2
-		B=(sharedBase ** key) % sharedPrime 
+		B=(sharedBase ** serverSecret) % sharedPrime 
 	except ValueError:
 		connections.pop(n_id)
 		print ("Error Occured!")
@@ -102,23 +102,23 @@ def DHK_exc_s(key,conn,d_id,n_id):
 		conn.close()
 		print ("Connection with "+str(d_id)+" is Closed")
 	conn.send(str(B)) #7-1
-	shared_key = (A**key) % sharedPrime
+	shared_key = (A**serverSecret) % sharedPrime
 	return shared_key
 
-def enc_dec(q,key,string):
+def enc_dec(q,key,s):
 	if q=="e":
 		BLOCK_SIZE = 16
 		PADDING = '{'
 		pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * PADDING
 		EncodeAES = lambda c,s: base64.b64encode(c.encrypt(pad(s)))
 		cipher = AES.new(key)
-		encode = EncodeAES(cipher, string)
+		encode = EncodeAES(cipher, s)
 		return encode
 	elif q=="d":
 		PADDING = '{'
 		DecodeAES = lambda c,e: c.decrypt(base64.b64decode(e)).rstrip(PADDING)	
 		cipher = AES.new(key)
-		decode = DecodeAES(cipher,string)
+		decode = DecodeAES(cipher,s)
 		return decode
 
 def compute_gcd(x, y): # finding GCD
@@ -174,7 +174,7 @@ def base_node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
 	b_n_ar.append(n_id)
 	print "Base Nodes : ",b_n_ar
 
-#==========================
+
 def node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
 	print('node identified')
 	old_hash_value,t_id='abc',0 # To Be Used During Reading Verification
@@ -185,10 +185,11 @@ def node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
 	data=[i.split(':') for i in enc_dec('d',shared_key,conn.recv(1024).rstrip("\n\r")).split('|')] #16-2
 	print ('Nominated based nodes along with sharedBase for '+str(n_id)+'|'+str(d_id)+' => '+str(data))
 	for i in data:
-		connections[int(i[0])].send(enc_dec('e',connections_credentials[int(i[0])]['shared_key'],str(n_id)+','+str(n_ip)+','+str(n_port)+','+str(i[1])+','+str(i[0])))# 15-1
+		connections[int(i[0])].send(enc_dec('e',connections_credentials[int(i[0])]['shared_key'],str(n_id)+','+str(n_ip)+','+str(n_port)+','+str(i[1])+','+str(i[0])))# sending the required crenentials to the respective base_nodes
 	print ("Credentials have been sent to the respected Base Nodes")
 
-#==========================
+
+
 def client_thread(n_id,conn):
 	d_id,key = '',''
 	f=0 # flags
@@ -215,7 +216,7 @@ def client_thread(n_id,conn):
 				# kl=len(shared_key)
 				if len(shared_key)==16:
 					#checking key symmetricity
-					vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)]) #generating 32 bit string
+					vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)]) #generating 16 bit string
 					conn.send(enc_dec('e',shared_key,vs+","+vs[::-1])) #8-1 #encrypting and sending the value ("string,reverse of string")
 					ar=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n")).split(',') #9-2
 					# print ar
@@ -225,7 +226,7 @@ def client_thread(n_id,conn):
 					else:
 						print("Key Validation Failed")
 			print ("Shared Key => "+str(shared_key))
-			print colored("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****",'red')
+			print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
 
 			#Computing parameters for generating digital signature using RSA
 			print ("Generating Parameters for Digital Signature...(Wait)")
