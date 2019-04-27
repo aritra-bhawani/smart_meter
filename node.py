@@ -30,20 +30,20 @@ def DHK_exc_c(key,sock):
 		print ("Error Occured!\nTry again")
 	return shared_key
 
-def enc_dec(q,key,string):
+def enc_dec(q,key,s):
 	if q=="e":
 		BLOCK_SIZE = 16
 		PADDING = '{'
 		pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * PADDING
 		EncodeAES = lambda c,s: base64.b64encode(c.encrypt(pad(s)))
 		cipher = AES.new(key)
-		encode = EncodeAES(cipher, string)
+		encode = EncodeAES(cipher, s)
 		return encode
 	if q=="d":
 		PADDING = '{'
 		DecodeAES = lambda c,e: c.decrypt(base64.b64decode(e)).rstrip(PADDING)	
 		cipher = AES.new(key)
-		decode = DecodeAES(cipher,string)
+		decode = DecodeAES(cipher,s)
 		return decode
 def compute_gcd(x, y): # finding GCD
 	smaller=x if(x<y) else y
@@ -62,7 +62,7 @@ def inverse(x, m): # finding the inverse
 
 def dig_sig_para():
 	# two prime numbers
-	p,q=79,71 # to be randomly chosen
+	p,q=97,89 # to be randomly chosen
 	n=p*q
 	fi=(p-1)*(q-1)
 	ar=[]
@@ -76,8 +76,8 @@ def dig_sig_para():
 	# print (n,e,d)
 	return (n,e,d)
 
-def dig_sig_gen(q,d_e,n,string,sg=0):
-	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 3 bit hash
+def dig_sig_gen(q,d_e,n,s,sg=0):
+	h_val = int(hashlib.sha256(s.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 3 bit hash
 	if q=="g":
 		sg_cal = (h_val**d_e) % n
 		# print (h_val)
@@ -87,6 +87,22 @@ def dig_sig_gen(q,d_e,n,string,sg=0):
 		# print (h_val,h_cal)
 		if h_val==h_cal : return True
 		else : return False
+
+def DHK_exc_n_s(conn,sharedPrime,sharedBase,n_c_id,n_id):
+	serverSecret=random.randint(5,20)
+	try:
+		A=long(conn.recv(1024).rstrip("\n\r")) #c-2
+		B=(sharedBase ** serverSecret) % sharedPrime 
+	except ValueError:
+		connections.pop(n_id)
+		print ("Error Occured!")
+		print "Connections List : ",connections
+		conn.close()
+		print ("Connection with "+str(d_id)+" is Closed")
+	conn.send(str(B)) #d-1
+	s_k = (A**serverSecret) % sharedPrime
+	return s_k
+
 
 #=====================NODAL SERVER===================#
 def get_ip():
@@ -101,15 +117,59 @@ def get_ip():
 		s.close()
 	return IP
 def nodal_client_thread(n_c_id,conn):
-	print base_nodes_d
 	while True:
-		data=conn.recv(1024).rstrip("\n")
+		data=conn.recv(1024).rstrip("\n") # a-2
 		if data:
-			print(data)
+			n_id,s_k=int(data),''
+			print('credentials for => '+data)
+			#==========encrypt the connection==========
+			sharedPrime=9999999900000001 # a random prime to be chosen
+			sharedBase=int(base_nodes_key[n_id])
+			conn.send(str(sharedPrime)) # b-1
+			kc=0
+			while kc==0:
+				s_k=str(DHK_exc_n_s(conn,sharedPrime,sharedBase,n_c_id,n_id))
+				if len(s_k)==16:
+					vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)]) #generating 32 bit string
+					conn.send(enc_dec('e',s_k,vs+","+vs[::-1])) #c-1 #encrypting and sending the value ("string,reverse of string")
+					a=enc_dec('d',s_k,conn.recv(1024).rstrip("\n")).split(',') #d-2
+					if a[0]==a[1][::-1]:
+						print("Key Shared and Validated Successfully")	
+						kc=1
+					else:
+						print("Key Validation Failed")
+			print ("Shared Key => "+str(s_k))
+			print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
+
+			#==================
+			print ("Generating Parameters for Digital Signature...(Wait)")
+			ti=time.time()
+			n_n_s,n_e_s,n_d = dig_sig_para()
+			print ("Time Taken to Generate Parameters : "+str(time.time()-ti))
+			print("Signing Parameters of Server : \n n (nodal server) => "+str(n_n_s)+"\n e (nodal server) => "+str(n_e_s)+"\n n_n_d (nodal server:private key) => "+str(d))
+			conn.send(enc_dec('e',s_k,str(n_n_s)+","+str(n_e_s))) #e-1
+			a=enc_dec('d',s_k,conn.recv(1024).rstrip("\n")).split(',') #f-2
+			n_n_c,n_e_c=int(a[0]),int(a[1])
+
+			#Verifying the Signature of Server
+			vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)])
+			sg=dig_sig_gen('g',n_d,n_n_s,vs)
+			conn.send(enc_dec('e',s_k,vs+","+str(sg))) #12-1
+
+			#Verifying the Signature of Client
+			a=enc_dec('d',s_k,conn.recv(1024).rstrip("\n")).split(',') #13-2
+			if dig_sig_gen('v',n_e_c,n_n_c,a[0],int(a[1])):
+				connections_credentials.update({n_id:{'s_k':s_k,'n_n_s':n_n_s,'n_d':n_d,'n_n_c':n_n_c,'n_e_c':n_e_c}})
+				print (connections_credentials)
+				f=1
+				break
+
+			#====================
 		if not data:
 			print('closing connection')
 			conn.close()
 			connections.pop(n_c_id)
+			break
 def nodal_server_listen(s):
 	n_c_id = 1
 	while __name__=="__main__":
@@ -131,7 +191,7 @@ if __name__=="__main__":
 	n_c,e_c,d=0,0,0
 	n_s,e_s=0,0
 	
-	b_node_connections={}
+	b_node_connections,b_node_connections_credentials={},{}
 
 	old_hash_value,n_t_id='abc',1 # to be fetched from the local DB(Local Ledger)
 	start_time,stop_time,unit_slab=0,0,0 # time stamps ad unit slabs
@@ -178,7 +238,7 @@ if __name__=="__main__":
 				else:
 					print("Key Validation Failed")		
 		print ("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
-		print colored("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****",'red')
+		print colored("***** Data Channel To Server is Encrypted *****",'red')
 		print ("Generating Parameters for Digital Signature...(Wait)")
 		ti=time.time()
 		n_c,e_c,d = dig_sig_para()
@@ -187,10 +247,8 @@ if __name__=="__main__":
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #10-2
 		sock.send(enc_dec('e',shared_key,str(n_c)+","+str(e_c))) #11-1
 		n_s,e_s=int(ar[0]),int(ar[1])
-		# print (n_s,e_s)
 
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #12-2
-		# print(dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])))
 		if not dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])):
 			print ("ERROR : Occured During Signature Verification")
 			sock.close()
@@ -221,11 +279,11 @@ if __name__=="__main__":
 		sock.send(enc_dec("e",shared_key,str(n_ip)+','+str(n_port))) #14-1 
 		data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #15-2
 		print ('List of base nodes received from server: '+str(data))
-		data=random.sample(data, 2) # selecting 2 random base nodes
-		string,base_nodes_d='',{}
+		data=random.sample(data, 1) # selecting 2 random base nodes
+		s,base_nodes_key='',{}
 		for i in data:
 			sharedBase=random.randint(100000000,999999999)
-			string+=i+':'+str(sharedBase)+'|'
-			base_nodes_d.update({int(i):sharedBase})
+			s+=i+':'+str(sharedBase)+'|'
+			base_nodes_key.update({int(i):sharedBase})
 		print('Sending the nominated base nodes list along with respective sharedBase for key exchange')
-		sock.send(enc_dec("e",shared_key,string[:-1])) #16-1
+		sock.send(enc_dec("e",shared_key,s[:-1])) #16-1
