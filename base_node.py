@@ -17,14 +17,14 @@ port = 5000
 sock.connect((host,port))
 serving_connections,serving_node_credentials={},{}
 
-def DHK_exc_c(key,sock):
+def DHK_exc_c(clientSecret,sock):
 	ar=(sock.recv(1024).rstrip("\n")).split(',') #5-2
 	sharedPrime,sharedBase=int(ar[0]),int(ar[1])
 	try:
-		A = (sharedBase**key) % sharedPrime
+		A = (sharedBase**clientSecret) % sharedPrime
 		sock.send(str(A)) #6-1
 		B=long(sock.recv(1024).rstrip("\n")) #7-2
-		shared_key=(B ** key) % sharedPrime
+		shared_key=(B ** clientSecret) % sharedPrime
 	except ValueError:
 		print ("Error Occured!\nTry again")
 	return shared_key
@@ -87,17 +87,59 @@ def dig_sig_gen(q,d_e,n,string,sg=0):
 		if h_val==h_cal : return True
 		else : return False
 
-def serving_client_thread(data):
+def DHK_exc_n_c(sk,sharedPrime,sharedBase):
+	clientSecret=random.randint(5,20)
+	try:
+		A = (sharedBase**key) % sharedPrime
+		sk.send(str(A)) #c-1
+		B=long(sk.recv(1024).rstrip("\n")) #d-2
+		s_k=(B ** key) % sharedPrime
+	except ValueError:
+		print ("Error Occured!\nTry again")
+	return s_k
+
+def nodal_client_thread(data):
 	print data
-	n_id,host,port=int(data[0]),data[1],int(data[2])
+	n_id,host,port,sharedBase=int(data[0]),data[1],int(data[2]),int(data[3])
 	sk=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	sk.connect((host,port))
 	serving_connections.update({n_id:sk})
-	serving_connections[n_id].connect((host,port))
+	# serving_connections[n_id].connect((host,port))
 	time.sleep(.5)
-	serving_connections[n_id].send('Hello form some base node '+str(random.randint(1,1000)))
+	serving_connections[n_id].send(data[-1])# a-1
+	sharedPrime=int((serving_connections[n_id].recv(1024)).rstrip("\n")) # b-2
+	s_k,kc='',0
+	while kc==0:
+		s_k=str(DHK_exc_n_c(sk,sharedPrime,sharedBase))
+		if len(str(s_k))==16:
+			a=enc_dec('d',s_k,sk.recv(1024).rstrip("\n")).split(',') #c-2
+			if a[0]==a[1][::-1]:
+				vs = ''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)])
+				sk.send(enc_dec('e',s_k,vs+","+vs[::-1])) #d-1
+				print("Key Shared and Validated Successfully!")
+				kc=1
+			else:
+				print("Key Validation Failed")		
+	print ("Shared Key => "+s_k) # to be hidden just printed for test purpose		
+	print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
 
+	print ("Generating Parameters for Digital Signature...(Wait)")
+	ti=time.time()
+	n_n_c,n_e_c,n_d = dig_sig_para()
+	print ("time taken to generate parameters : "+str(time.time()-ti))
+	print("Signing Parameters of Client : \n n (nodal client) => "+str(n_n_c)+"\n e (nodal client) => "+str(n_e_c)+"\n n_d (nodal client:private key) => "+str(n_d))
+	a=enc_dec('d',s_k,sk.recv(1024).rstrip("\n")).split(',') #e-2
+	sk.send(enc_dec('e',s_k,str(n_n_c)+","+str(n_e_c))) #f-1
+	n_n_s,n_e_s=int(a[0]),int(a[1])
 
+	a=enc_dec('d',s_k,sk.recv(1024).rstrip("\n")).split(',') #12-2
+	if not dig_sig_gen('v',n_e_s,n_n_s,a[0],sg=int(a[1])):
+		print ("ERROR : Occured During Signature Verification")
+		sk.close()
 
+	vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)])
+	sg=dig_sig_gen('g',n_d,n_n_c,vs)
+	sk.send(enc_dec('e',s_k,vs+","+str(sg))) #13-1
 
 
 
@@ -148,7 +190,7 @@ if __name__=="__main__":
 				else:
 					print("Key Validation Failed")		
 		print ("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
-		print colored("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****",'red')
+		print colored("***** Data Channel To Server is Encrypted *****",'red')
 		print ("Generating Parameters for Digital Signature...(Wait)")
 		ti=time.time()
 		n_c,e_c,d = dig_sig_para()
@@ -180,9 +222,4 @@ if __name__=="__main__":
 		data=enc_dec('d',shared_key,data).split(',')
 		print ('Decrypted data => '+str(data))
 
-		start_new_thread(serving_client_thread,(data,))
-
-
-
-
-
+		start_new_thread(nodal_client_thread,(data,))
