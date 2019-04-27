@@ -1,3 +1,5 @@
+from termcolor import colored
+print colored('Initializing Dependencies...','yellow')
 import socket
 from thread import *
 from Crypto.Cipher import AES
@@ -8,7 +10,6 @@ import string
 import time
 import os
 import sys
-import serial
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 # host = input('enter IP of server') #192.168.43.212
@@ -86,15 +87,57 @@ def dig_sig_gen(q,d_e,n,string,sg=0):
 		# print (h_val,h_cal)
 		if h_val==h_cal : return True
 		else : return False
-	
-while __name__=="__main__":
+
+#=====================NODAL SERVER===================#
+def get_ip():
+	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+	try:
+		# doesn't even have to be reachable
+		s.connect(('10.255.255.255', 1))
+		IP = s.getsockname()[0]
+	except:
+		IP = '127.0.0.1'
+	finally:
+		s.close()
+	return IP
+def nodal_client_thread(n_c_id,conn):
+	print base_nodes_d
+	while True:
+		data=conn.recv(1024).rstrip("\n")
+		if data:
+			print(data)
+		if not data:
+			print('closing connection')
+			conn.close()
+			connections.pop(n_c_id)
+def nodal_server_listen(s):
+	n_c_id = 1
+	while __name__=="__main__":
+		try:
+			conn , addr = s.accept()
+			print('connected to:' +addr[0] +":"+str(addr[1]))
+			start_new_thread(nodal_client_thread,(n_c_id,conn))
+			connections.update({n_c_id:conn})
+			n_c_id+=1
+			print "Connections List : ",connections
+		except KeyboardInterrupt:
+			print ("\nServer is Stopped!")
+			break	
+#==========================	
+if __name__=="__main__":
+	n_ip,n_port='','' # port for nodal server
 	f=0 # flags
 	shared_key,clientSecret ="",random.randint(5,20) # used in Diffie-hellman
 	n_c,e_c,d=0,0,0
 	n_s,e_s=0,0
-	response=sock.recv(1024).rstrip("\n") #1-2
+	
+	b_node_connections={}
 
-	if f==0 and response=='C':
+	old_hash_value,n_t_id='abc',1 # to be fetched from the local DB(Local Ledger)
+	start_time,stop_time,unit_slab=0,0,0 # time stamps ad unit slabs
+
+	response=sock.recv(1024).rstrip("\n") #1-2
+	while f==0 and response=='C':
 		d_id,key=0,0
 		print ("Connection Established")
 		while d_id==0:
@@ -119,6 +162,8 @@ while __name__=="__main__":
 		# Key Exchange Process
 		if sock.recv(1024).rstrip("\n") != "S": #4-2
 			break
+
+		# Key exchange using Diffie-Helman
 		kc=0
 		while kc==0:
 			shared_key=str(DHK_exc_c(clientSecret,sock))
@@ -133,7 +178,7 @@ while __name__=="__main__":
 				else:
 					print("Key Validation Failed")		
 		print ("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
-		print ("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****")
+		print colored("***** Hereafter, All the Data Tranfer Will Be Encrypted. But for Our Convinience, Decrypted Values Will be Printed *****",'red')
 		print ("Generating Parameters for Digital Signature...(Wait)")
 		ti=time.time()
 		n_c,e_c,d = dig_sig_para()
@@ -142,8 +187,10 @@ while __name__=="__main__":
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #10-2
 		sock.send(enc_dec('e',shared_key,str(n_c)+","+str(e_c))) #11-1
 		n_s,e_s=int(ar[0]),int(ar[1])
+		# print (n_s,e_s)
 
 		ar=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #12-2
+		# print(dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])))
 		if not dig_sig_gen('v',e_s,n_s,ar[0],sg=int(ar[1])):
 			print ("ERROR : Occured During Signature Verification")
 			sock.close()
@@ -152,54 +199,33 @@ while __name__=="__main__":
 		sg=dig_sig_gen('g',d,n_c,vs)
 		sock.send(enc_dec('e',shared_key,vs+","+str(sg))) #13-1
 
-		print ("Transmission Data Format => start_time,stop_time,unit_slab,signature")
-		print ("Operation Successful!\nStarting Data Transmission...")
-		print("\n")
-		old_hash_value,n_t_id='abc',1 # to be fetched from the local DB(Local Ledger)
-		start_time,stop_time,unit_slab=time.time(),0,0
-	while True:
+		#====================================
+		print ("\nStarting the nodal-server")
+		host=''
+		n_port=random.randint(5000,15000)
+		s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		connections,connections_credentials = {},{}
 		try:
-			print("Sending New Token ID => "+str(n_t_id))
-			sock.send(enc_dec("e",shared_key,str(n_t_id))) #a-1
-			data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")) #b-2
-			print ("Received Hash Value => "+data)
-			if old_hash_value!=data:
-				print("Old Hash Verification : Failed")
-				break
-			print ("Old Hash Verification : Successful")	
+			s.bind((host,n_port))
+			n_ip=get_ip()
+			print colored("NODAL SERVER STARTED\nIP => "+ n_ip,'green')
+		except socket.error as e:
+			print(str(e))
+		s.listen(10)
+		print colored("n_port => "+str(s.getsockname()[1])+"\nlistening...\n",'green')
+		start_new_thread(nodal_server_listen,(s,))
+		time.sleep(1)
+		#=====================================
 
-			# Data Reading
-                        while True:
-                                v=ser.readline().rstrip("\n\r")
-                                if v!='':
-                                        unit_slab=v
-                                        break
-                        print ("Energy Consumption Measured in this Slab => "+str(unit_slab))
-                        stop_time=time.time()
-
-			# Data Sending
-			s=str(n_t_id)+','+str(start_time)+','+str(stop_time)+','+str(unit_slab)
-			data=s+'|'+str(dig_sig_gen('g',d,n_c,s))
-			print("Data to be Transmitted => "+data)
-			data=enc_dec("e",shared_key,data)
-			print ("Transmitted Cypher : "+data)
-			sock.send(data) #c-1
-
-			new_hash_value = int(hashlib.sha256((s+old_hash_value).encode('utf-8')).hexdigest(), 16) % 10**16
-
-			data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")) #d-2
-			data=data.split('|')
-			print ('Received New Hash Value => '+data[0])
-
-			if (dig_sig_gen('v',e_s,n_s,data[0],int(data[1]))) and (str(new_hash_value)==data[0]):
-				print ("Signature and New Hash Verification : Successful")
-				old_hash_value,n_t_id=data[0],n_t_id+1
-
-			print('Delay Time => '+str(stop_time-start_time)+"\n")
-			start_time=stop_time
-
-
-		except KeyboardInterrupt:
-			print ("\nConnection to The Server is Terminated!")
-			sys.exit()	
-
+		print ('Sending the IP and Port  no of the nodal-server')
+		sock.send(enc_dec("e",shared_key,str(n_ip)+','+str(n_port))) #14-1 
+		data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',') #15-2
+		print ('List of base nodes received from server: '+str(data))
+		data=random.sample(data, 2) # selecting 2 random base nodes
+		string,base_nodes_d='',{}
+		for i in data:
+			sharedBase=random.randint(100000000,999999999)
+			string+=i+':'+str(sharedBase)+'|'
+			base_nodes_d.update({int(i):sharedBase})
+		print('Sending the nominated base nodes list along with respective sharedBase for key exchange')
+		sock.send(enc_dec("e",shared_key,string[:-1])) #16-1
