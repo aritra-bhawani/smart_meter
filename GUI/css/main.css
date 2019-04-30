@@ -1,0 +1,129 @@
+*, *:after, *:before {
+  margin: 0;
+  padding: 0;
+  -webkit-box-sizing: border-box;
+  -moz-box-sizing: border-box;
+  box-sizing: border-box;
+  -webkit-touch-callout: none;
+  -khtml-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;    
+}
+body, html {
+  overflow:hidden;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  text-align: center;
+  position:relative;
+  /*background:linear-gradient(90deg,#E5E8E8,#fff);*/
+  font-family: Poppins;
+} 
+#login{
+  height: 100%;
+  width: 100%;
+  position: absolute;
+  background:linear-gradient(90deg,#D7DBDD,#fff);
+  /*margin-top: -0%;*/
+  z-index: 999;
+  box-shadow: 0px 0px 15px 1px #5D6D7E;
+  transition: all 650ms;
+}
+.login_style_add{
+  margin-top: -150vh;
+}
+#login .title {
+  margin-top: 10%;
+  font-size: 1em;
+  font-family: Raleway;
+  letter-spacing: 2.5px;
+  color: #000;
+}
+#login .wrap{
+  margin-top: 50vh;
+  transform: translate(0,-50%);
+}
+#login .title {
+  margin-top: -2%;
+  font-size: 1.75em;
+  font-family: Raleway;
+  letter-spacing: 2.5px;
+  color: #000;
+}
+#login .content {
+  margin-top: 3%;
+}
+#login .content .box{
+  width:100vw;
+  max-width: 300px;
+  height: 100vh;
+  max-height: 300px;
+  margin: auto;
+  border-style: solid;
+  border-width: 1.5px 1.5px 1.5px 1.5px;
+  border-radius: 10px;
+  background-color: #fff;
+}
+#login .content .box div{
+  margin-top: 50%;
+  transform: translate(0,-50%);
+}
+#login .content .box div h2{
+  font-family: Raleway;
+  font-size: 1.5rem;
+  letter-spacing: 3px;
+  margin: 0px 0 15px 0;
+}
+#login .content .box input, button{
+  outline: none;
+  border:none;
+  width:250px;
+  font-size: 17px;
+  letter-spacing: 1.5px;
+}
+#login .content .box input{
+  text-align: center;
+  padding:2px;
+  margin:15px 0 15px 0; 
+  background-color: #E5E7E9;
+  border-style: solid;
+  border-width: 1px 1px 1px 1px;
+  border-color: #2E4053;
+  border-radius: 5px;
+}
+#login .content .box button{
+  cursor: pointer;
+  margin: 35px 0 0 0;
+  padding: 5px 2px 5px 2px;
+  background-color: #85C1E9;
+  border-radius: 5px;
+}
+
+
+#insight{
+  height: 100%;
+  width: 100%;
+  position: absolute;
+  background-color: white;
+  z-index: 0;
+}
+
+
+#tail{
+  position: absolute;
+  left: 0; right: 0;
+  bottom: 0;
+  /*background-color: #EC7063;*/
+  background-color: #45B39D;
+  z-index: 9999;
+}
+#tail p{
+  padding: 5px 0 5px 0;
+}
+
+
+
+
