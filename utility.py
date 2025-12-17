@@ -1,5 +1,5 @@
-from termcolor import colored
-print colored('Initializing Dependencies...','yellow')
+# from termcolor import colored
+# print colored('Initializing Dependencies...','yellow')
 import socket
 from thread import *
 from Crypto.Cipher import AES
@@ -120,8 +120,8 @@ def nodal_client_thread(data):
 				kc=1
 			else:
 				print("Key Validation Failed")		
-	print ("Shared Key => "+s_k) # to be hidden just printed for test purpose		
-	print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
+	print("Shared Key => "+s_k) # to be hidden just printed for test purpose		
+	print("***** Data Channel To "+str(n_id)+" is Encrypted *****")
 
 	print ("Generating Parameters for Digital Signature...(Wait)")
 	ti=time.time()
@@ -176,6 +176,8 @@ if __name__=="__main__":
 		# Key Exchange Process
 		if sock.recv(1024).rstrip("\n") != "S": #4-2
 			break
+
+		
 		kc=0
 		while kc==0:
 			shared_key=str(DHK_exc_c(clientSecret,sock))
@@ -189,8 +191,9 @@ if __name__=="__main__":
 					kc=1
 				else:
 					print("Key Validation Failed")		
-		print ("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
-		print colored("***** Data Channel To Server is Encrypted *****",'red')
+		print("Shared Key => "+shared_key) # to be hidden just printed for test purpose		
+		print("***** Data Channel To Server is Encrypted *****")
+
 		print ("Generating Parameters for Digital Signature...(Wait)")
 		ti=time.time()
 		n_c,e_c,d = dig_sig_para()
@@ -213,7 +216,7 @@ if __name__=="__main__":
 		f=1
 
 
-		print colored('BASE NODE STARTED','green')
+		print('BASE NODE STARTED')
 
 	while f!=0:	
 		# data=enc_dec('d',shared_key,sock.recv(1024).rstrip("\n")).split(',')
