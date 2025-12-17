@@ -1,45 +1,37 @@
-from termcolor import colored
-print colored('Initializing Dependencies...','yellow')
-import socket
+# from termcolor import colored
+# print colored('Initializing Dependencies...','yellow')
+import socket, base64, hashlib, random, string, time, os, sys, sqlite3
 from thread import *
 from Crypto.Cipher import AES
-import base64
-import hashlib
-import random
-import string
-import time
-import os
-import sys
-import sqlite3
 
-if __name__=="__main__":
-	#Intializing 7 Users 
-	u=[[23,1234],[24,12345],[25,4321],[26,54321],[27,1234],[28,4321],[29,12345]]
-	con=sqlite3.connect('data_base.db')
-	c = con.cursor()
-	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-	r = []
-	for i in c.fetchall():
-		r.append(i[0])
-	if "DEVICES" not in r:
-		c.execute("""CREATE TABLE DEVICES (
-					D_ID INTEGER PRIMARY KEY,
-					D_KEY INTEGER,
-					D_STAT BOOLEAN
-					)""")
-		for i in u:
-			c.execute("INSERT INTO DEVICES (D_ID, D_KEY, D_STAT) values (?, ?, ?)",(i[0],i[1],0))
-	if "LEDGER" not in r:
-		c.execute("""CREATE TABLE LEDGER (
-					SL_NO INTEGER PRIMARY KEY AUTOINCREMENT,
-					D_ID INTEGER,
-					START_TIME TIMESTAMP,
-					STOP_TIME TIMESTAMP,
-					UNIT_SLAB FLOAT,
-					HASH TEXT
-					)""")
-	con.commit()
-	con.close()	
+# if __name__=="__main__":
+# 	#Intializing 7 Users 
+# 	u=[[23,1234],[24,12345],[25,4321],[26,54321],[27,1234],[28,4321],[29,12345]]
+# 	con=sqlite3.connect('data_base.db')
+# 	c = con.cursor()
+# 	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+# 	r = []
+# 	for i in c.fetchall():
+# 		r.append(i[0])
+# 	if "DEVICES" not in r:
+# 		c.execute("""CREATE TABLE DEVICES (
+# 					D_ID INTEGER PRIMARY KEY,
+# 					D_KEY INTEGER,
+# 					D_STAT BOOLEAN
+# 					)""")
+# 		for i in u:
+# 			c.execute("INSERT INTO DEVICES (D_ID, D_KEY, D_STAT) values (?, ?, ?)",(i[0],i[1],0))
+# 	if "LEDGER" not in r:
+# 		c.execute("""CREATE TABLE LEDGER (
+# 					SL_NO INTEGER PRIMARY KEY AUTOINCREMENT,
+# 					D_ID INTEGER,
+# 					START_TIME TIMESTAMP,
+# 					STOP_TIME TIMESTAMP,
+# 					UNIT_SLAB FLOAT,
+# 					HASH TEXT
+# 					)""")
+# 	con.commit()
+# 	con.close()	
 
 def d_verify(d_id,key):
 	con=sqlite3.connect('data_base.db')
@@ -271,32 +263,97 @@ def get_ip():
 		s.close()
 	return IP
 
-host=''
-port=5000
-s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-connections,connections_credentials = {},{}
-try:
-	s.bind((host,port))
-	print colored("SERVER STARTED\nIP => "+ get_ip(),'green')
-except socket.error as e:
-	print colored(str(e),'red')
+sample_space={
+	'users':[{'id':10,'name':'aritra bhawani','email':'ab@gmail.com','ph_no':9087361836},{'id':11,'name':'jack smith','email':'js@gmail.com','ph_no':6729461321},{'id':12,'name':'alma chan','email':'ac@gmail.com','ph_no':2025550187}],
+	'meter_ids':[23,24,25],
+	'utility_table':[{'id':55, 'pass':12345}, {'id':66, 'pass':12345}],
+	'base_meter':[{'id':26, 'pass':12345}, {'id':27, 'pass':12345}, {'id':28, 'pass':12345}, {'id':29, 'pass':12345}, {'id':30, 'pass':12345}, {'id':31, 'pass':12345}]
+}
 
-s.listen(10)
-print colored("port => "+str(s.getsockname()[1])+"\nListening...\n",'green')
-#=======================
+if __name__=="__main__":
+	#Intializing 7 Users 
+	# u=[[[10,'aritra bhawani','ab@gmail.com',9087361836],[11,'jack smith','js@gmail.com,'6729461321],[12,'alma chan','ac@gmail.com',2025550187]],[23,24,25],[[55,12345],[66,12345]],[[26,12345],[27,12345],[28,12345],[29,12345],[30,12345]]]
+	
+	
+	con = sqlite3.connect('certifying_authority_DB.db')
+	c = con.cursor()
+	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+	r = []
+	for i in c.fetchall():
+		r.append(i[0])
+	if "CONSUMER_TABLE" not in r:
+		c.execute("""CREATE TABLE CONSUMER_TABLE (
+			CONSUMER_ID INTEGER PRIMARY KEY,
+			CONSUMER_NAME TEXT,
+			CONSUMER_PHONE_EMAIL TEXT,
+			CONSUMER_PHONE_NUMBER INTEGER,
+			STAT BOOLEAN
+			)""")
+		for i in u[0]:
+			c.execute("INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?)",(i[0], i[1], i[2], i[3], 0))
+	if "METER_TABLE" not in r:
+		c.execute("""CREATE TABLE METER_TABLE (
+			METER_ID INTEGER PRIMARY KEY, 
+			CONSUMER_ID INTEGER,
+			ASSIGNED_ID INTEGER,
+			ASSIGNED_ACCESS_KEY TEXT,
+			IP_PORT TEXT,
+			QUORUM_SLICE TEXT,
+			SERVING_METERS TEXT,
+			STAT BOOLEAN
+			)""")
+		for i in u[1]:
+			c.execute("INSERT INTO METER_TABLE (METER_ID, CONSUMER_ID, ASSIGNED_ID, ASSIGNED_ACCESS_KEY, IP_PORT, QUORUM_SLICE, STAT) values (?, ?, ?, ?, ?, ?, ?)",(i, None, None, None, None, None , 0))
+	if "UTILITY_TABLE" not in r:
+		c.execute("""CREATE TABLE UTILITY_TABLE (
+			UTILITY_ID INTEGER PRIMARY KEY,
+			UTILITY_PASS INTEGER,
+			ASSIGNED_ID INTEGER,
+			IP_PORT TEXT,
+			STAT BOOLEAN
+			)""")
+		for i in u[2]:
+			c.execute("INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP_PORT, STAT) values (?, ?, ?, ?)",(i[0], i[1], None, 0))
+	if "BASE_METER_TABLE" not in r:
+		c.execute("""CREATE TABLE BASE_METER_TABLE (
+			BASE_METER_ID INTEGER PRIMARY KEY,
+			BASE_METER_PASS INTEGER,
+			ASSIGNED_ID INTEGER,
+			IP_PORT TEXT,
+			SERVING_METERS TEXT,
+			STAT BOOLEAN
+			)""")
+		for i in u[3]:
+			c.execute("INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP_PORT, SERVING_METERS, STAT) values (?, ?, ?, ?, ?, ?)",(i[0], i[1], None, None, None, 0))		
+	con.commit()
+	con.close()
 
-n_id,b_n_ar=1,[]
-while __name__=="__main__":
+	host=''
+	port=5000
+	s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	connections,connections_credentials = {},{}
 	try:
-		conn , addr = s.accept()
-		print('connected to:' +addr[0] +":"+str(addr[1]))
-		start_new_thread(client_thread,(n_id,conn))
-		connections.update({n_id:conn})
-		n_id+=1
-		print "Connections List : ",connections
-	except KeyboardInterrupt:
-		print colored("\nServer is Stopped!",'red')
-		print('Resetting device status in the DB')
-		d_id_list=[23,24,25,26,27,28,29]
-		[d_stat_up(i,0) for i in d_id_list]
-		sys.exit()
+		s.bind((host,port))
+		print colored("SERVER STARTED\nIP => "+ get_ip(),'green')
+	except socket.error as e:
+		print colored(str(e),'red')
+
+	s.listen(10)
+	print colored("port => "+str(s.getsockname()[1])+"\nListening...\n",'green')
+	#=======================
+
+	n_id,b_n_ar=1,[]
+	while __name__=="__main__":
+		try:
+			conn , addr = s.accept()
+			print('connected to:' +addr[0] +":"+str(addr[1]))
+			start_new_thread(client_thread,(n_id,conn))
+			connections.update({n_id:conn})
+			n_id+=1
+			print "Connections List : ",connections
+		except KeyboardInterrupt:
+			print colored("\nServer is Stopped!",'red')
+			print('Resetting device status in the DB')
+			d_id_list=[23,24,25,26,27,28,29]
+			[d_stat_up(i,0) for i in d_id_list]
+			sys.exit()

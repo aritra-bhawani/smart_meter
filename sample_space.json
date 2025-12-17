@@ -1,0 +1,35 @@
+{
+  "users": [
+    {
+      "id": 10,
+      "name": "aritra bhawani",
+      "email": "ab@gmail.com",
+      "ph_no": "9087361836"
+    },
+    {
+      "id": 11,
+      "name": "jack smith",
+      "email": "js@gmail.com",
+      "ph_no": "6729461321"
+    },
+    {
+      "id": 12,
+      "name": "alma chan",
+      "email": "ac@gmail.com",
+      "ph_no": "2025550187"
+    }
+  ],
+  "meter_ids": [23, 24, 25],
+  "utility_table": [
+    { "id": 55, "pass": 12345 },
+    { "id": 66, "pass": 12345 }
+  ],
+  "base_meter": [
+    { "id": 26, "pass": 12345 },
+    { "id": 27, "pass": 12345 },
+    { "id": 28, "pass": 12345 },
+    { "id": 29, "pass": 12345 },
+    { "id": 30, "pass": 12345 },
+    { "id": 31, "pass": 12345 }
+  ]
+}
