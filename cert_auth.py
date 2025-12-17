@@ -1,7 +1,7 @@
 # from termcolor import colored
 # print colored('Initializing Dependencies...','yellow')
-import socket, base64, hashlib, random, string, time, os, sys, sqlite3
-from thread import *
+import socket, base64, hashlib, random, string, time, os, sys, sqlite3, json
+from _thread import *
 from Crypto.Cipher import AES
 
 # if __name__=="__main__":
@@ -40,7 +40,7 @@ def d_verify(d_id,key):
 	result = c.fetchall()
 	con.commit()
 	con.close()
-	print "Initial Device Status in DB : ",result
+	print ("Initial Device Status in DB : ",result)
 	if len(result)==0:
 		return ([False,"No Device Found By This ID!\nTry again."])
 	else:
@@ -56,7 +56,7 @@ def d_stat_up(d_id,val):
 	c = con.cursor()
 	c.execute("UPDATE DEVICES SET D_STAT = ? WHERE D_ID = ?", (val,d_id))
 	c.execute("SELECT * FROM DEVICES WHERE D_ID=?",(d_id,))
-	print "Updated Device Status in DB : ",c.fetchall()
+	print ("Updated Device Status in DB : ",c.fetchall())
 	con.commit()
 	con.close()
 	return True
@@ -90,7 +90,7 @@ def DHK_exc_s(serverSecret,conn,d_id,n_id):
 	except ValueError:
 		connections.pop(n_id)
 		print ("Error Occured!")
-		print "Connections List : ",connections
+		print ("Connections List : ",connections)
 		conn.close()
 		print ("Connection with "+str(d_id)+" is Closed")
 	conn.send(str(B)) #7-1
@@ -157,14 +157,14 @@ def close_conn(d_id,n_id):
 	print ("Token Verification : Failed\nConnection with "+str(d_id)+" is Closed")
 	d_stat_up(d_id,0)
 	connections.pop(n_id)
-	print "Connections List : ",connections
+	print ("Connections List : ",connections)
 	conn.close()
 
 #==========================
 def base_node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
 	print('base node identified')
 	b_n_ar.append(n_id)
-	print "Base Nodes : ",b_n_ar
+	print ("Base Nodes : ",b_n_ar)
 
 
 def node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
@@ -217,8 +217,8 @@ def client_thread(n_id,conn):
 						kc=1
 					else:
 						print("Key Validation Failed")
-			print ("Shared Key => "+str(shared_key))
-			print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
+			print("Shared Key => "+str(shared_key))
+			print("***** Data Channel To "+str(n_id)+" is Encrypted *****")
 
 			#Computing parameters for generating digital signature using RSA
 			print ("Generating Parameters for Digital Signature...(Wait)")
@@ -263,17 +263,12 @@ def get_ip():
 		s.close()
 	return IP
 
-sample_space={
-	'users':[{'id':10,'name':'aritra bhawani','email':'ab@gmail.com','ph_no':9087361836},{'id':11,'name':'jack smith','email':'js@gmail.com','ph_no':6729461321},{'id':12,'name':'alma chan','email':'ac@gmail.com','ph_no':2025550187}],
-	'meter_ids':[23,24,25],
-	'utility_table':[{'id':55, 'pass':12345}, {'id':66, 'pass':12345}],
-	'base_meter':[{'id':26, 'pass':12345}, {'id':27, 'pass':12345}, {'id':28, 'pass':12345}, {'id':29, 'pass':12345}, {'id':30, 'pass':12345}, {'id':31, 'pass':12345}]
-}
 
-if __name__=="__main__":
-	#Intializing 7 Users 
-	# u=[[[10,'aritra bhawani','ab@gmail.com',9087361836],[11,'jack smith','js@gmail.com,'6729461321],[12,'alma chan','ac@gmail.com',2025550187]],[23,24,25],[[55,12345],[66,12345]],[[26,12345],[27,12345],[28,12345],[29,12345],[30,12345]]]
-	
+# ========================vvvvvvvvvvvvvvvvv========================
+# initializing the DB for the certifying authority
+def cert_auth_db_init():
+	with open("sample_space.json", "r") as f:
+		sample_space=json.load(f)
 	
 	con = sqlite3.connect('certifying_authority_DB.db')
 	c = con.cursor()
@@ -289,8 +284,8 @@ if __name__=="__main__":
 			CONSUMER_PHONE_NUMBER INTEGER,
 			STAT BOOLEAN
 			)""")
-		for i in u[0]:
-			c.execute("INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?)",(i[0], i[1], i[2], i[3], 0))
+		for i in sample_space["users"]:
+			c.execute("INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?, ?)",(i["id"], i["name"], i["email"], i["ph_no"], 0))
 	if "METER_TABLE" not in r:
 		c.execute("""CREATE TABLE METER_TABLE (
 			METER_ID INTEGER PRIMARY KEY, 
@@ -302,7 +297,7 @@ if __name__=="__main__":
 			SERVING_METERS TEXT,
 			STAT BOOLEAN
 			)""")
-		for i in u[1]:
+		for i in sample_space["meter_ids"]:
 			c.execute("INSERT INTO METER_TABLE (METER_ID, CONSUMER_ID, ASSIGNED_ID, ASSIGNED_ACCESS_KEY, IP_PORT, QUORUM_SLICE, STAT) values (?, ?, ?, ?, ?, ?, ?)",(i, None, None, None, None, None , 0))
 	if "UTILITY_TABLE" not in r:
 		c.execute("""CREATE TABLE UTILITY_TABLE (
@@ -312,8 +307,8 @@ if __name__=="__main__":
 			IP_PORT TEXT,
 			STAT BOOLEAN
 			)""")
-		for i in u[2]:
-			c.execute("INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP_PORT, STAT) values (?, ?, ?, ?)",(i[0], i[1], None, 0))
+		for i in sample_space["utility_table"]:
+			c.execute("INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP_PORT, STAT) values (?, ?, ?, ?)",(i["id"], i["pass"], None, 0))
 	if "BASE_METER_TABLE" not in r:
 		c.execute("""CREATE TABLE BASE_METER_TABLE (
 			BASE_METER_ID INTEGER PRIMARY KEY,
@@ -323,23 +318,34 @@ if __name__=="__main__":
 			SERVING_METERS TEXT,
 			STAT BOOLEAN
 			)""")
-		for i in u[3]:
-			c.execute("INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP_PORT, SERVING_METERS, STAT) values (?, ?, ?, ?, ?, ?)",(i[0], i[1], None, None, None, 0))		
+		for i in sample_space["base_meter"]:
+			c.execute("INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP_PORT, SERVING_METERS, STAT) values (?, ?, ?, ?, ?, ?)",(i["id"], i["pass"], None, None, None, 0))		
 	con.commit()
 	con.close()
+# ========================<<<<<<<>>>>>>>>>>========================
 
+if __name__=="__main__":
+	# Config START
+	port = 5002
+	# Config END
+
+
+	# DB initialization
+	cert_auth_db_init()
+	
+	# Start the host
 	host=''
-	port=5000
+	connections = {"utility":{}, "base_meters":{}, "meters":{}}
 	s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	connections,connections_credentials = {},{}
 	try:
 		s.bind((host,port))
-		print colored("SERVER STARTED\nIP => "+ get_ip(),'green')
+		print("SERVER STARTED\nIP => "+ get_ip())
 	except socket.error as e:
-		print colored(str(e),'red')
+		print(str(e))
 
-	s.listen(10)
-	print colored("port => "+str(s.getsockname()[1])+"\nListening...\n",'green')
+	s.listen() #OS default number of connections
+	print("port => "+str(s.getsockname()[1])+"\nListening...\n")
 	#=======================
 
 	n_id,b_n_ar=1,[]
@@ -350,10 +356,12 @@ if __name__=="__main__":
 			start_new_thread(client_thread,(n_id,conn))
 			connections.update({n_id:conn})
 			n_id+=1
-			print "Connections List : ",connections
+			print ("Connections List :",connections)
 		except KeyboardInterrupt:
-			print colored("\nServer is Stopped!",'red')
-			print('Resetting device status in the DB')
-			d_id_list=[23,24,25,26,27,28,29]
-			[d_stat_up(i,0) for i in d_id_list]
+			print ("\nServer is Stopped!")
+			os.remove("certifying_authority_DB.db")
+			print("Deleted the certifying authority\'s db")
+			# print('Resetting device status in the DB')
+			# d_id_list=[23,24,25,26,27,28,29]
+			# [d_stat_up(i,0) for i in d_id_list]
 			sys.exit()
