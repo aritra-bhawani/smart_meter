@@ -1,3 +1,4 @@
+import os
 import socket
 import random
 import hashlib
@@ -5,12 +6,25 @@ import base64
 import json
 import math
 from Crypto.Cipher import AES
+import time
+import threading
 
-HOST = "127.0.0.1"
-PORT = 5005
+CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
+CA_PORT = int(os.getenv("CA_PORT", "5005"))
 
-UTILITY_ID = 66
-UTILITY_PASS = "12345"
+# CA_IP = "127.0.0.1"
+# CA_PORT = 5005
+
+CA_N = None
+CA_E = None
+
+# CLIENT CONFIG START
+UTILITY_ID = int(os.environ["UTILITY_ID"])
+UTILITY_PASS = os.getenv("UTILITY_PASS", "12345")
+# UTILITY_ID = 1
+# UTILITY_PASS = "12345"
+ASSIGNED_ID = None
+# CLIENT CONFIG END
 
 # ======================
 # Load primes
@@ -72,38 +86,66 @@ def rsa_sign(d, n, msg):
 # CLIENT FLOW
 # ======================
 
-sock = socket.socket()
-sock.connect((HOST, PORT))
+def connect_server():
+	sock = socket.socket()
+	sock.connect((CA_IP, CA_PORT))
 
-shared_int = dh_client(sock)
-aes_key = kdf_aes_key(shared_int)
+	shared_int = dh_client(sock)
+	aes_key = kdf_aes_key(shared_int)
 
-probe = aes_decrypt(aes_key, sock.recv(1024))
-x, y = probe.split(",")
-sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+	probe = aes_decrypt(aes_key, sock.recv(1024))
+	x, y = probe.split(",")
+	sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
 
-sock.sendall(aes_encrypt(aes_key, f"UTILITY,{UTILITY_ID},{UTILITY_PASS}"))
-resp = aes_decrypt(aes_key, sock.recv(1024))
-if resp != "OK":
-    print("Authentication failed:", resp)
-    sock.close()
-    exit()
+	sock.sendall(aes_encrypt(aes_key, f"UTILITY,{UTILITY_ID},{UTILITY_PASS}"))
+	resp = aes_decrypt(aes_key, sock.recv(1024))
+	if resp != "OK":
+		print("Authentication failed:", resp)
+		sock.close()
+		exit()
 
-n_c, e_c, d_c = rsa_generate()
+	global CL_N, CL_E, CL_D # Client RSA keys
+	CL_N, CL_E, CL_D = rsa_generate()
 
-n_s, e_s = map(
-    int,
-    aes_decrypt(aes_key, sock.recv(1024)).split(",")
-)
+	CA_N, CA_E = map(
+		int,
+		aes_decrypt(aes_key, sock.recv(1024)).split(",")
+	)
 
-sock.sendall(aes_encrypt(aes_key, f"{n_c},{e_c}"))
+	sock.sendall(aes_encrypt(aes_key, f"{CL_N},{CL_E}"))
 
-msg, sig = aes_decrypt(aes_key, sock.recv(1024)).split(",")
-print("TEST:", msg)
-sock.sendall(
-    aes_encrypt(aes_key, f"{msg},{rsa_sign(d_c, n_c, msg)}")
-)
+	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split(",")
+	print("ASSIGNED_ID:", aid)
+	ASSIGNED_ID = aid
 
-# print(aes_encrypt, n_s, e_s)
-print("Utility authenticated successfully")
-sock.close()
+	threading.Thread(
+		target=start_server,
+		daemon=False
+	).start()
+	time.sleep(0.5)
+
+	# Send the server ip and port with
+	msg = f"{HOST}:{PORT}"
+	sock.sendall(
+		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+	)
+
+	print("Utility authenticated successfully")
+	# for name, value in locals().items():
+	# 	print(f"  {name}: {value} (Type: {type(value).__name__})")
+	sock.close()
+
+def start_server():
+	sock = socket.socket()
+	sock.bind(("0.0.0.0", 0))
+	sock.listen(5)
+	global HOST, PORT
+	HOST, PORT = sock.getsockname()
+	print(f"[+] Utility Server listening on {HOST}:{PORT}")
+
+	while True:
+		conn, addr = sock.accept()
+		# handlCL_Elient(conn, addr)
+
+if __name__ == "__main__":
+    connect_server()

@@ -99,11 +99,13 @@ def init_db():
 # DB OPS
 # ======================
 
-def random_id(l=16):
+def random_id(leng=16):
     alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(l))
+    return ''.join(secrets.choice(alphabet) for _ in range(leng))
 
+# for utility start
 def verify_utility(uid, upass):
+    print("Req Utility:", uid)
     con = sqlite3.connect(DB_FILE)
     c = con.cursor()
     c.execute(
@@ -121,17 +123,70 @@ def verify_utility(uid, upass):
         return False, "Utility already active"
     return True, "OK"
 
-
-def update_utility_status(uid, id, status):
+def update_utility_status(uid, status, id=None, ip=None, port=None, n_c=None, e_c=None):
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    if status and id is not None:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, ASSIGNED_ID=? WHERE UTILITY_ID=?",
+            (status, id, uid)
+        )
+    if status and ip is not None:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE UTILITY_ID=?",
+            (status, ip, port, n_c, e_c, uid)
+        )
+    if status != 1:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, ASSIGNED_ID=? WHERE UTILITY_ID=?",
+            (status, None, uid)
+        )
+    con.commit()
+    con.close()
+    # for name, value in locals().items():
+    #     print(f"  {name}: {value} (Type: {type(value).__name__})")
+# for utility end
+# for base meter start
+def verify_base_meter(uid, upass):
+    print("Req Base Meter:", uid)
     con = sqlite3.connect(DB_FILE)
     c = con.cursor()
     c.execute(
-        "UPDATE UTILITY_TABLE SET STAT=?, ASSIGNED_ID=? WHERE UTILITY_ID=?",
-        (status, id, uid)
+        "SELECT BASE_METER_PASS, STAT FROM BASE_METER_TABLE WHERE BASE_METER_ID=?",
+        (uid,)
     )
-    con.commit()
+    row = c.fetchone()
     con.close()
 
+    if not row:
+        return False, "Base Meter not found"
+    if row[0] != upass:
+        return False, "Invalid credentials"
+    if row[1]:
+        return False, "Base Meter already active"
+    return True, "OK"
+
+def update_base_meter_status(uid, status, id=None, ip=None, port=None, n_c=None, e_c=None):
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    if status and id is not None:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, ASSIGNED_ID=? WHERE BASE_METER_ID=?",
+            (status, id, uid)
+        )
+    if status and ip is not None:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE BASE_METER_ID=?",
+            (status, ip, port, n_c, e_c, uid)
+        )
+    if status != 1:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, ASSIGNED_ID=? WHERE BASE_METER_ID=?",
+            (status, None, uid)
+        )
+    con.commit()
+    con.close()
+# for base meter end
 # ======================
 # CRYPTO
 # ======================
@@ -203,7 +258,7 @@ def rsa_verify(e, n, msg, sig):
 
 def handle_client(conn, addr):
     try:
-        print(f"[+] Utility connected from {addr}")
+        print(f"[+] Client connected from {addr}")
 		# DH Key Exchange | AES Key Derivation | AES Channel Validation - START
         shared_int = dh_server_exchange(conn)
         aes_key = kdf_aes_key(shared_int)
@@ -226,8 +281,18 @@ def handle_client(conn, addr):
                 conn.close()
                 return
             u_asi_id = 'u_' + random_id()
-            update_utility_status(uid, u_asi_id, 1)
+            update_utility_status(uid, 1, id=u_asi_id)
 		# Utility Authentication - END
+		# Base Meter Authentication - START
+        if client_type == "BASE_METER":
+            ok, msg = verify_base_meter(uid, upass)
+            conn.sendall(aes_encrypt(aes_key, msg))
+            if not ok:
+                conn.close()
+                return
+            u_asi_id = 'b_' + random_id()
+            update_base_meter_status(uid, 1, id=u_asi_id)
+		# Base Meter Authentication - END
 		# Client Authentication - END
 
         # RSA auth exchange - START
@@ -240,18 +305,30 @@ def handle_client(conn, addr):
         )
 		# RSA auth exchange - END
 
-        # challenge = "utility_auth"
         sig_s = rsa_sign(d_s, n_s, u_asi_id)
         conn.sendall(aes_encrypt(aes_key, f"{u_asi_id},{sig_s}"))
 
-        c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split(",")
-        if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
-            update_utility_status(uid, 0)
-            conn.close()
-            return
-        for name, value in locals().items():
-            print(f"  {name}: {value} (Type: {type(value).__name__})")
-        print(f"[✓] Utility {uid} authenticated")
+        c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split("|")
+
+        if client_type == "UTILITY":
+            if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+                update_utility_status(uid, 0)
+                conn.close()
+                return
+            else:
+                update_utility_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
+        
+        if client_type == "BASE_METER":
+            if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+                update_base_meter_status(uid, 0)
+                conn.close()
+                return
+            else:
+                update_base_meter_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
+        
+		# for name, value in locals().items():
+        #     print(f"  {name}: {value} (Type: {type(value).__name__})")
+        print("[✓] "+("Utility" if client_type == "UTILITY" else "Base Meter") + f" {uid} authenticated")
         conn.close()
 
     except Exception as e:
@@ -267,7 +344,7 @@ def start_server():
     s = socket.socket()
     s.bind((HOST, PORT))
     s.listen()
-    print("Certifying Authority STARTED")
+    print("Certifying Authority STARTED at", s.getsockname())
     global CA_N, CA_E, CA_D
     CA_N, CA_E, CA_D = rsa_generate()
     while True:
