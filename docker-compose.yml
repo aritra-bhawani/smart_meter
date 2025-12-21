@@ -1,0 +1,37 @@
+version: "3.9"
+services:
+  ca:
+    build: .
+    environment:
+      - ROLE=ca
+      - HOST=0.0.0.0
+      - PORT=5005
+    ports:
+      - "5005:5005"
+    volumes:
+      - ./db:/app/data
+
+  utility:
+    build: .
+    environment:
+      - ROLE=utility
+      - CA_HOST=ca
+      - CA_PORT=5005
+      - UTILITY_PASS=12345
+      - UTILITY_ID_OFFSET=1
+    depends_on:
+      - ca
+
+  base_meter:
+    build: .
+    environment:
+      - ROLE=base_meter
+      - CA_HOST=ca
+      - CA_PORT=5005
+      - BASE_METER_PASS=12345
+      - BASE_METER_ID_OFFSET=1
+    depends_on:
+      - ca
+
+volumes:
+  ca_db:
