@@ -9,9 +9,11 @@ from Crypto.Cipher import AES
 import time
 import threading
 
+# For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
 CA_PORT = int(os.getenv("CA_PORT", "5005"))
 
+# For normal debugging
 # CA_IP = "127.0.0.1"
 # CA_PORT = 5005
 
@@ -19,9 +21,9 @@ CA_N = None
 CA_E = None
 
 # CLIENT CONFIG START
-UTILITY_ID = int(os.environ["UTILITY_ID"])
+# UTILITY_ID = int(os.environ["UTILITY_ID"])
 UTILITY_PASS = os.getenv("UTILITY_PASS", "12345")
-# UTILITY_ID = 1
+UTILITY_ID = random.randint(1, 1000)
 # UTILITY_PASS = "12345"
 ASSIGNED_ID = None
 # CLIENT CONFIG END
@@ -86,7 +88,14 @@ def rsa_sign(d, n, msg):
 # CLIENT FLOW
 # ======================
 
-def connect_server():
+def get_container_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))   # no packets sent
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
+def connect_to_ca():
 	sock = socket.socket()
 	sock.connect((CA_IP, CA_PORT))
 
@@ -114,7 +123,7 @@ def connect_server():
 
 	sock.sendall(aes_encrypt(aes_key, f"{CL_N},{CL_E}"))
 
-	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split(",")
+	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|")
 	print("ASSIGNED_ID:", aid)
 	ASSIGNED_ID = aid
 
@@ -140,7 +149,8 @@ def start_server():
 	sock.bind(("0.0.0.0", 0))
 	sock.listen(5)
 	global HOST, PORT
-	HOST, PORT = sock.getsockname()
+	HOST = get_container_ip()
+	PORT = sock.getsockname()[1]
 	print(f"[+] Utility Server listening on {HOST}:{PORT}")
 
 	while True:
@@ -148,4 +158,4 @@ def start_server():
 		# handlCL_Elient(conn, addr)
 
 if __name__ == "__main__":
-    connect_server()
+    connect_to_ca()

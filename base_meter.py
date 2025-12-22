@@ -9,9 +9,11 @@ from Crypto.Cipher import AES
 import time
 import threading
 
+# For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
 CA_PORT = int(os.getenv("CA_PORT", "5005"))
 
+# For normal debugging
 # CA_IP = "127.0.0.1"
 # CA_PORT = 5005
 
@@ -19,9 +21,9 @@ CA_N = None
 CA_E = None
 
 # CLIENT CONFIG START
-BASE_METER_ID = int(os.environ["BASE_METER_ID"])
+# BASE_METER_ID = int(os.environ["BASE_METER_ID"])
 BASE_METER_PASS = os.getenv("BASE_METER_PASS", "12345")
-# BASE_METER_ID = 1
+BASE_METER_ID = random.randint(1, 1000)
 # BASE_METER_PASS = "12345"
 ASSIGNED_ID = None
 # CLIENT CONFIG END
@@ -86,6 +88,13 @@ def rsa_sign(d, n, msg):
 # CLIENT FLOW
 # ======================
 
+def get_container_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.connect(("8.8.8.8", 80))   # no packets sent
+    ip = s.getsockname()[0]
+    s.close()
+    return ip
+
 def connect_server():
 	sock = socket.socket()
 	sock.connect((CA_IP, CA_PORT))
@@ -114,7 +123,7 @@ def connect_server():
 
 	sock.sendall(aes_encrypt(aes_key, f"{CL_N},{CL_E}"))
 
-	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split(",")
+	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|")
 	print("ASSIGNED_ID:", aid)
 	ASSIGNED_ID = aid
 
@@ -135,12 +144,34 @@ def connect_server():
 	# 	print(f"  {name}: {value} (Type: {type(value).__name__})")
 	sock.close()
 
+	# Reconnect to send INIT
+	time.sleep(5)
+	sock = socket.socket()
+	sock.connect((CA_IP, CA_PORT))
+
+	shared_int = dh_client(sock)
+	aes_key = kdf_aes_key(shared_int)
+
+	probe = aes_decrypt(aes_key, sock.recv(1024))
+	x, y = probe.split(",")
+	sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+
+	msg = f"{ASSIGNED_ID},INIT"
+	sock.sendall(
+		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+	)
+	print(aes_decrypt(aes_key, sock.recv(1024)))
+	sock.close()
+
+
+
 def start_server():
 	sock = socket.socket()
 	sock.bind(("0.0.0.0", 0))
 	sock.listen(5)
 	global HOST, PORT
-	HOST, PORT = sock.getsockname()
+	HOST = get_container_ip()
+	PORT = sock.getsockname()[1]
 	print(f"[+] Base Meter Server listening on {HOST}:{PORT}")
 
 	while True:
