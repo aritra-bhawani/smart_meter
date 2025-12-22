@@ -1,4 +1,3 @@
-version: "3.9"
 services:
   ca:
     build: .
@@ -9,7 +8,7 @@ services:
     ports:
       - "5005:5005"
     volumes:
-      - ./db:/app/data
+      - ca_db:/app/data
 
   utility:
     build: .
@@ -18,7 +17,6 @@ services:
       - CA_HOST=ca
       - CA_PORT=5005
       - UTILITY_PASS=12345
-      - UTILITY_ID_OFFSET=1
     depends_on:
       - ca
 
@@ -29,7 +27,6 @@ services:
       - CA_HOST=ca
       - CA_PORT=5005
       - BASE_METER_PASS=12345
-      - BASE_METER_ID_OFFSET=1
     depends_on:
       - ca
 

@@ -1,5 +1,7 @@
 Strt the cert_auth > mdms > base_meter > meter
 
+colima start
+
 --------
 docker-compose down -v
 docker image rm smart_meter-ca smart_meter-utility smart_meter-base_meter || true
