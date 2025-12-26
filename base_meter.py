@@ -25,7 +25,7 @@ CA_E = None
 BASE_METER_PASS = os.getenv("BASE_METER_PASS", "12345")
 BASE_METER_ID = random.randint(1, 1000)
 # BASE_METER_PASS = "12345"
-ASSIGNED_ID = None
+# ASSIGNED_ID = None
 # CLIENT CONFIG END
 
 # ======================
@@ -84,6 +84,10 @@ def rsa_sign(d, n, msg):
     h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
     return pow(h, d, n)
 
+def rsa_verify(e, n, msg, sig):
+    h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
+    return h == pow(sig, e, n)
+
 # ======================
 # CLIENT FLOW
 # ======================
@@ -95,7 +99,41 @@ def get_container_ip():
     s.close()
     return ip
 
-def connect_server():
+def proceed_init():
+	print("proceeding to send INIT...")
+	time.sleep(random.randint(3,10))  # simulate delay
+
+	sock = socket.socket()
+	sock.connect((CA_IP, CA_PORT))
+
+	# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+	shared_int = dh_client(sock)
+	aes_key = kdf_aes_key(shared_int)
+
+	probe = aes_decrypt(aes_key, sock.recv(1024))
+	x, y = probe.split(",")
+	sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+	# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+
+	msg = f"{ASSIGNED_ID},INIT"
+	sock.sendall(
+		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+	)
+
+	data = aes_decrypt(aes_key, sock.recv(1024))
+	print(data)
+	ca_msg, ca_sig = data.split("|")
+	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		print("CA signature verification failed")
+		sock.close()
+		exit()
+	print(ca_msg)
+	for i in (ca_msg.split(";")):
+		s = socket.socket()
+		s.connect((i.split(",")[1], int(i.split(",")[2])))
+	sock.close()
+
+def connect_to_ca():
 	sock = socket.socket()
 	sock.connect((CA_IP, CA_PORT))
 
@@ -116,6 +154,8 @@ def connect_server():
 	global CL_N, CL_E, CL_D # Client RSA keys
 	CL_N, CL_E, CL_D = rsa_generate()
 
+	# Ensure CA globals are assigned to the module-level variables
+	global CA_N, CA_E
 	CA_N, CA_E = map(
 		int,
 		aes_decrypt(aes_key, sock.recv(1024)).split(",")
@@ -125,6 +165,7 @@ def connect_server():
 
 	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|")
 	print("ASSIGNED_ID:", aid)
+	global ASSIGNED_ID
 	ASSIGNED_ID = aid
 
 	threading.Thread(
@@ -144,25 +185,9 @@ def connect_server():
 	# 	print(f"  {name}: {value} (Type: {type(value).__name__})")
 	sock.close()
 
-	# Reconnect to send INIT
-	time.sleep(5)
-	sock = socket.socket()
-	sock.connect((CA_IP, CA_PORT))
-
-	shared_int = dh_client(sock)
-	aes_key = kdf_aes_key(shared_int)
-
-	probe = aes_decrypt(aes_key, sock.recv(1024))
-	x, y = probe.split(",")
-	sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
-
-	msg = f"{ASSIGNED_ID},INIT"
-	sock.sendall(
-		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
-	)
-	print(aes_decrypt(aes_key, sock.recv(1024)))
-	sock.close()
-
+	# Reconnect to send INIT | selection for random base meter for this operation
+	if random.randint(0, 1):
+		proceed_init()
 
 
 def start_server():
@@ -173,10 +198,14 @@ def start_server():
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]
 	print(f"[+] Base Meter Server listening on {HOST}:{PORT}")
-
+	a = list()
 	while True:
 		conn, addr = sock.accept()
+		a.append(addr)
+		print(f"[+] Client connected from {addr}")
+		print(f"[+] Current connected clients: {a}")
+		conn.close()
 		# handlCL_Elient(conn, addr)
 
 if __name__ == "__main__":
-    connect_server()
+    connect_to_ca()

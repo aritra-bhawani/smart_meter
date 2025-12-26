@@ -30,72 +30,88 @@ PRIMES_BIG = PRIMES["big"]
 # ======================
 
 def init_db():
-	with open("sample_space.json", "r") as f:
-		sample_space=json.load(f)
-	
-	con = sqlite3.connect('certifying_authority_DB.db')
-	c = con.cursor()
-	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-	r = []
-	for i in c.fetchall():
-		r.append(i[0])
-	if "CONSUMER_TABLE" not in r:
-		c.execute("""CREATE TABLE CONSUMER_TABLE (
-			CONSUMER_ID INTEGER PRIMARY KEY,
-			CONSUMER_NAME TEXT,
-			CONSUMER_PHONE_EMAIL TEXT,
-			CONSUMER_PHONE_NUMBER INTEGER,
-			STAT BOOLEAN
-			)""")
-		for i in sample_space["users"]:
-			c.execute("INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?, ?)",(i["id"], i["name"], i["email"], i["ph_no"], 0))
-	if "METER_TABLE" not in r:
-		c.execute("""CREATE TABLE METER_TABLE (
-			METER_ID INTEGER PRIMARY KEY, 
-			CONSUMER_ID INTEGER,
-			ASSIGNED_ID INTEGER,
-			ASSIGNED_ACCESS_KEY TEXT,
-			IP TEXT,
-			PORT INTEGER,
-			QUORUM_SLICE TEXT,
-			SERVING_METERS TEXT,
-			N_C INTEGER,
-			E_C INTEGER,
-			STAT BOOLEAN
-			)""")
-		for i in sample_space["meter_ids"]:
-			c.execute("INSERT INTO METER_TABLE (METER_ID, CONSUMER_ID, ASSIGNED_ID, ASSIGNED_ACCESS_KEY, IP, PORT, QUORUM_SLICE, SERVING_METERS, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",(i, None, None, None, None, None, None, None, None, None, 0))
-	if "UTILITY_TABLE" not in r:
-		c.execute("""CREATE TABLE UTILITY_TABLE (
-			UTILITY_ID INTEGER PRIMARY KEY,
-			UTILITY_PASS TEXT,
-			ASSIGNED_ID INTEGER,
-			IP TEXT,
-			PORT INTEGER,
-			N_C INTEGER,
-			E_C INTEGER,
-			STAT BOOLEAN
-			)""")
-		# for i in sample_space["utility_table"]:
-		for i in range(1000):
-			c.execute("INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP, PORT, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?)",(i, "12345", None, None, None, None, 0))
-	if "BASE_METER_TABLE" not in r:
-		c.execute("""CREATE TABLE BASE_METER_TABLE (
-			BASE_METER_ID INTEGER PRIMARY KEY,
-			BASE_METER_PASS TEXT,
-			ASSIGNED_ID INTEGER,
-			IP TEXT,
-			PORT INTEGER,
-			SERVING_METERS TEXT,
-			N_C INTEGER,
-			E_C INTEGER,
-			STAT BOOLEAN
-			)""")
-		# for i in sample_space["base_meter"]:
-		for i in range(1000):
-			c.execute("INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP, PORT, SERVING_METERS, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",(i, "12345", None, None, None, None, None, None, 0))
-	con.commit()
-	con.close()
+    with open("sample_space.json", "r") as f:
+        sample_space = json.load(f)
+
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    r = [i[0] for i in c.fetchall()]
+
+    if "CONSUMER_TABLE" not in r:
+        c.execute("""CREATE TABLE CONSUMER_TABLE (
+            CONSUMER_ID INTEGER PRIMARY KEY,
+            CONSUMER_NAME TEXT,
+            CONSUMER_PHONE_EMAIL TEXT,
+            CONSUMER_PHONE_NUMBER INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in sample_space["users"]:
+            c.execute(
+                "INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?, ?)",
+                (i["id"], i["name"], i["email"], i["ph_no"], 0),
+            )
+
+    # METER_TABLE creation and sample inserts commented out as unused/redundant
+    # if "METER_TABLE" not in r:
+    #     c.execute("""CREATE TABLE METER_TABLE (
+    #         METER_ID INTEGER PRIMARY KEY,
+    #         CONSUMER_ID INTEGER,
+    #         ASSIGNED_ID INTEGER,
+    #         ASSIGNED_ACCESS_KEY TEXT,
+    #         IP TEXT,
+    #         PORT INTEGER,
+    #         QUORUM_SLICE TEXT,
+    #         SERVING_METERS TEXT,
+    #         N_C INTEGER,
+    #         E_C INTEGER,
+    #         STAT BOOLEAN
+    #         )""")
+    #     for i in sample_space["meter_ids"]:
+    #         c.execute(
+    #             "INSERT INTO METER_TABLE (METER_ID, CONSUMER_ID, ASSIGNED_ID, ASSIGNED_ACCESS_KEY, IP, PORT, QUORUM_SLICE, SERVING_METERS, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    #             (i, None, None, None, None, None, None, None, None, None, 0),
+    #         )
+
+    if "UTILITY_TABLE" not in r:
+        c.execute("""CREATE TABLE UTILITY_TABLE (
+            UTILITY_ID INTEGER PRIMARY KEY,
+            UTILITY_PASS TEXT,
+            ASSIGNED_ID INTEGER,
+            IP TEXT,
+            PORT INTEGER,
+            N_C INTEGER,
+            E_C INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in range(1000):
+            c.execute(
+                "INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP, PORT, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?)",
+                (i, "12345", None, None, None, None, 0),
+            )
+
+    if "BASE_METER_TABLE" not in r:
+        c.execute("""CREATE TABLE BASE_METER_TABLE (
+            BASE_METER_ID INTEGER PRIMARY KEY,
+            BASE_METER_PASS TEXT,
+            ASSIGNED_ID INTEGER,
+            IP TEXT,
+            PORT INTEGER,
+            SERVING_METERS TEXT,
+            QUORUM_VALIDSTION_KEY TEXT,
+            QUORUM_SLICE TEXT,
+            N_C INTEGER,
+            E_C INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in range(1000):
+            c.execute(
+                "INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP, PORT, SERVING_METERS, QUORUM_VALIDSTION_KEY, QUORUM_SLICE, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (i, "12345", None, None, None, None, None, None, None, None, 0),
+            )
+
+    con.commit()
+    con.close()
 
 # ======================
 # DB OPS
@@ -358,7 +374,7 @@ def node_secondary_requests_validation(data):
 def handle_client(conn, addr):
     try:
         print(f"[+] Client connected from {addr}")
-		# DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
         shared_int = dh_server_exchange(conn)
         # print("Shared Integer:", shared_int)
         aes_key = kdf_aes_key(shared_int)
@@ -367,7 +383,7 @@ def handle_client(conn, addr):
         if not validate_aes_channel(conn, aes_key):
             conn.close()
             return
-		# DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
         data = aes_decrypt(aes_key, conn.recv(1024))
         print("Received Data:", data)
@@ -391,9 +407,9 @@ def handle_client(conn, addr):
                 # Fetch available base meters and utilities
                 con = sqlite3.connect(DB_FILE)
                 c = con.cursor()
-                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE STAT=1 ORDER BY RANDOM() LIMIT 100")
+                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 100", (assigned_id,))
                 base_meters = c.fetchall()
-                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE STAT=1 ORDER BY RANDOM() LIMIT 50")
+                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 50", (assigned_id,))
                 utilities = c.fetchall()
                 con.close()
 
@@ -405,8 +421,9 @@ def handle_client(conn, addr):
                     response_data.append(f"{u[0]},{u[1]},{u[2]},{u[3]},{u[4]}")
 
                 # Send the response by signing the data and encrypting
-                sig_s = rsa_sign(CA_D, CA_N, str(response_data))
-                conn.sendall(aes_encrypt(aes_key, f"{str(response_data)}|{sig_s}"))
+                data = str(';'.join(map(str, response_data)))
+                sig_s = rsa_sign(CA_D, CA_N, data)
+                conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
                 # aes_encrypt(aes_key, conn.sendall(b"|".join(response_data)))
 
             conn.close()
