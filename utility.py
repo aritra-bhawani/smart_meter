@@ -25,7 +25,7 @@ CA_E = None
 UTILITY_PASS = os.getenv("UTILITY_PASS", "12345")
 UTILITY_ID = random.randint(1, 1000)
 # UTILITY_PASS = "12345"
-ASSIGNED_ID = None
+# ASSIGNED_ID = None
 # CLIENT CONFIG END
 
 # ======================
@@ -116,6 +116,8 @@ def connect_to_ca():
 	global CL_N, CL_E, CL_D # Client RSA keys
 	CL_N, CL_E, CL_D = rsa_generate()
 
+	# Ensure CA globals are assigned to the module-level variables
+	global CA_N, CA_E
 	CA_N, CA_E = map(
 		int,
 		aes_decrypt(aes_key, sock.recv(1024)).split(",")
@@ -125,6 +127,7 @@ def connect_to_ca():
 
 	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|")
 	print("ASSIGNED_ID:", aid)
+	global ASSIGNED_ID
 	ASSIGNED_ID = aid
 
 	threading.Thread(
@@ -155,6 +158,8 @@ def start_server():
 
 	while True:
 		conn, addr = sock.accept()
+		print(f"[+] Client connected from {addr}")
+		conn.close()
 		# handlCL_Elient(conn, addr)
 
 if __name__ == "__main__":
