@@ -52,27 +52,6 @@ def init_db():
                 (i["id"], i["name"], i["email"], i["ph_no"], 0),
             )
 
-    # METER_TABLE creation and sample inserts commented out as unused/redundant
-    # if "METER_TABLE" not in r:
-    #     c.execute("""CREATE TABLE METER_TABLE (
-    #         METER_ID INTEGER PRIMARY KEY,
-    #         CONSUMER_ID INTEGER,
-    #         ASSIGNED_ID INTEGER,
-    #         ASSIGNED_ACCESS_KEY TEXT,
-    #         IP TEXT,
-    #         PORT INTEGER,
-    #         QUORUM_SLICE TEXT,
-    #         SERVING_METERS TEXT,
-    #         N_C INTEGER,
-    #         E_C INTEGER,
-    #         STAT BOOLEAN
-    #         )""")
-    #     for i in sample_space["meter_ids"]:
-    #         c.execute(
-    #             "INSERT INTO METER_TABLE (METER_ID, CONSUMER_ID, ASSIGNED_ID, ASSIGNED_ACCESS_KEY, IP, PORT, QUORUM_SLICE, SERVING_METERS, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-    #             (i, None, None, None, None, None, None, None, None, None, 0),
-    #         )
-
     if "UTILITY_TABLE" not in r:
         c.execute("""CREATE TABLE UTILITY_TABLE (
             UTILITY_ID INTEGER PRIMARY KEY,
@@ -109,6 +88,14 @@ def init_db():
                 "INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP, PORT, SERVING_METERS, QUORUM_VALIDSTION_KEY, QUORUM_SLICE, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (i, "12345", None, None, None, None, None, None, None, None, 0),
             )
+
+    if "QUORUM_MAP" not in r:
+        c.execute("""CREATE TABLE QUORUM_MAP (
+            BASE_METER TEXT,
+            QUORUM_NODE TEXT,
+            VALIDATED BOOLEAN DEFAULT FALSE,
+            STAT BOOLEAN DEFAULT FALSE
+            )""")
 
     con.commit()
     con.close()
@@ -386,13 +373,11 @@ def handle_client(conn, addr):
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
         data = aes_decrypt(aes_key, conn.recv(1024))
-        print("Received Data:", data)
         # Client Registration Flow
         if not data.split("|")[-1].isdigit():
             client_register(conn, addr, aes_key, data)
         else:
             # Request contains, assigned id and signature
-            # Format: assigned_id, query_type, parameter1, parameter2,...|signature(inclusing the assined_id)
             if not node_secondary_requests_validation(data):
                 print("Client verification failed")
                 conn.close()
@@ -407,25 +392,59 @@ def handle_client(conn, addr):
                 # Fetch available base meters and utilities
                 con = sqlite3.connect(DB_FILE)
                 c = con.cursor()
-                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 100", (assigned_id,))
+                c.execute("SELECT ASSIGNED_ID FROM BASE_METER_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 100", (assigned_id,))
                 base_meters = c.fetchall()
-                c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 50", (assigned_id,))
+                c.execute("SELECT ASSIGNED_ID FROM UTILITY_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 50", (assigned_id,))
                 utilities = c.fetchall()
                 con.close()
 
                 # Prepare the response
                 response_data = []
                 for bm in base_meters:
-                    response_data.append(f"{bm[0]},{bm[1]},{bm[2]},{bm[3]},{bm[4]}")
+                    response_data.append(f"{bm[0]}")
                 for u in utilities:
-                    response_data.append(f"{u[0]},{u[1]},{u[2]},{u[3]},{u[4]}")
+                    response_data.append(f"{u[0]}")
 
                 # Send the response by signing the data and encrypting
                 data = str(';'.join(map(str, response_data)))
                 sig_s = rsa_sign(CA_D, CA_N, data)
                 conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
                 # aes_encrypt(aes_key, conn.sendall(b"|".join(response_data)))
+                data = aes_decrypt(aes_key, conn.recv(1024))
+                # print("Received Data:", data)
+                if not data.split("|")[-1].isdigit():
+                    client_register(conn, addr, aes_key, data)
+                else:
+                    selected_nodes = data.split("|")[0].split(",")
+                    response_data = []
+                    con = sqlite3.connect(DB_FILE)
+                    c = con.cursor()
 
+                    quorum_validation_key = random_id(64)
+                    c.execute(
+                        "UPDATE BASE_METER_TABLE SET QUORUM_VALIDSTION_KEY=? WHERE ASSIGNED_ID=?",
+                        (quorum_validation_key, assigned_id)
+                    )
+                    con.commit()
+                    response_data.append(f"{quorum_validation_key}")
+
+                    for node_id in selected_nodes:
+                        if node_id.startswith("u_"):
+                            c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?", (node_id,))
+                        elif node_id.startswith("b_"):
+                            c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?", (node_id,))
+                        row = c.fetchone()
+                        if row:
+                            response_data.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}")
+                            c.execute(
+                                "INSERT INTO QUORUM_MAP (BASE_METER, QUORUM_NODE, STAT) VALUES (?, ?, ?)",
+                                (assigned_id, row[0], 1)
+                            )
+                            con.commit()
+                    con.close()
+                    data = str(';'.join(map(str, response_data)))
+                    sig_s = rsa_sign(CA_D, CA_N, data)
+                    conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
             conn.close()
     except Exception as e:
         print("Error:", e)
