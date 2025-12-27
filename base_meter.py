@@ -8,6 +8,7 @@ import math
 from Crypto.Cipher import AES
 import time
 import threading
+import string
 
 # For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
@@ -28,11 +29,17 @@ BASE_METER_ID = random.randint(1, 1000)
 # ASSIGNED_ID = None
 # CLIENT CONFIG END
 
+# Quorum Size
+METER_COUNT = 8
+UTILITY_COUNT = 2
+
 # ======================
 # Load primes
 # ======================
 with open("prime.json", "r") as f:
-    PRIMES_SMALL = json.load(f)["small"]
+    PRIMES = json.load(f)
+PRIMES_SMALL = PRIMES["small"]
+PRIMES_BIG = PRIMES["big"]
 
 # ======================
 # CRYPTO
@@ -41,9 +48,22 @@ with open("prime.json", "r") as f:
 def kdf_aes_key(shared_int: int) -> bytes:
     return hashlib.sha256(str(shared_int).encode()).digest()[:16]
 
+def dh_server_exchange(conn):
+    prime = random.choice(PRIMES_BIG)
+    base = random.randint(10**8, 10**9)
+    secret = random.randint(5, 20)
+
+    conn.sendall(f"{prime},{base}".encode())
+    A = int(conn.recv(1024).decode())
+    B = pow(base, secret, prime)
+    conn.sendall(str(B).encode())
+
+    return pow(A, secret, prime)
 
 def dh_client(sock):
-    prime, base = map(int, sock.recv(1024).decode().split(","))
+    data = sock.recv(1024).decode()
+    # print("Received DH params:", data)
+    prime, base = map(int, data.split(","))
     secret = random.randint(5, 20)
 
     A = pow(base, secret, prime)
@@ -52,19 +72,23 @@ def dh_client(sock):
     B = int(sock.recv(1024).decode())
     return pow(B, secret, prime)
 
-
 def aes_encrypt(key: bytes, msg: str) -> bytes:
     cipher = AES.new(key, AES.MODE_ECB)
     pad = 16 - (len(msg) % 16)
     msg_padded = msg + chr(pad) * pad
     return base64.b64encode(cipher.encrypt(msg_padded.encode()))
 
-
 def aes_decrypt(key: bytes, data: bytes) -> str:
     cipher = AES.new(key, AES.MODE_ECB)
     raw = cipher.decrypt(base64.b64decode(data))
     return raw[:-raw[-1]].decode()
 
+def validate_aes_channel(conn, aes_key: bytes) -> bool:
+    probe = ''.join(random.choices(string.ascii_letters, k=16))
+    conn.sendall(aes_encrypt(aes_key, f"{probe},{probe[::-1]}"))
+    resp = aes_decrypt(aes_key, conn.recv(1024))
+    a, b = resp.split(",")
+    return a == b[::-1]
 
 def rsa_generate():
     p, q = random.sample(PRIMES_SMALL, 2)
@@ -78,7 +102,6 @@ def rsa_generate():
 
     d = pow(e, -1, phi)
     return n, e, d
-
 
 def rsa_sign(d, n, msg):
     h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
@@ -99,9 +122,34 @@ def get_container_ip():
     s.close()
     return ip
 
+def connect_to_quorum_node(verification_key, quorum_slice):
+	for node_id, node_info in quorum_slice.items():
+		node_ip = node_info['ip']
+		node_port = node_info['port']
+		node_n_c = node_info['n_c']
+		node_e_c = node_info['e_c']
+		if node_id.startswith("b_"):
+			# try:
+			soc = socket.create_connection((node_ip, int(node_port)), timeout=3)
+
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+			shared_int = dh_client(soc)
+			aes_key = kdf_aes_key(shared_int)
+
+			probe = aes_decrypt(aes_key, soc.recv(1024))
+			x, y = probe.split(",")
+			soc.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+
+			soc.close()
+			# print(f"Connected to quorum node {node_id} at {node_ip}:{node_port}")
+			# except Exception as e:
+			# 	print(f"Could not connect to quorum node {node_id} at {node_ip}:{node_port}:", e)
+
 def proceed_init():
 	print("proceeding to send INIT...")
 	time.sleep(random.randint(3,10))  # simulate delay
+	# time.sleep(20)  # simulate delay
 
 	sock = socket.socket()
 	sock.connect((CA_IP, CA_PORT))
@@ -120,18 +168,51 @@ def proceed_init():
 		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 	)
 
-	data = aes_decrypt(aes_key, sock.recv(1024))
-	print(data)
+	data = aes_decrypt(aes_key, sock.recv(4096))
+	# print(data[-40:])
 	ca_msg, ca_sig = data.split("|")
 	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
 		print("CA signature verification failed")
 		sock.close()
 		exit()
-	print(ca_msg)
+	# print(ca_msg)
+	utility, base_meters = list(), list()
 	for i in (ca_msg.split(";")):
-		s = socket.socket()
-		s.connect((i.split(",")[1], int(i.split(",")[2])))
+		if i.startswith("u_"):
+			utility.append(i)
+		else:
+			base_meters.append(i)
+	utility = random.sample(utility, min(UTILITY_COUNT, len(utility)))
+	base_meters = random.sample(base_meters, min(METER_COUNT, len(base_meters)))
+	selected = base_meters + utility
+
+	selected_str = ','.join(map(str, selected))
+	# sign the actual payload being sent
+	sock.sendall(
+		aes_encrypt(aes_key, f"{selected_str}|{rsa_sign(CL_D, CL_N, selected_str)}")
+	)
+
+	data = aes_decrypt(aes_key, sock.recv(4096))
+	ca_msg, ca_sig = data.split("|")
+	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		print("CA signature verification failed")
+		sock.close()
+		exit()
+	global QUORUM_VERIFICATION_KEY	
+	QUORUM_VERIFICATION_KEY, nodes = ca_msg.split(";")[0], ca_msg.split(";")[1:]
 	sock.close()
+
+	# the meter will now cooncect to the nodes wiht the ip and port provided
+	global QUORUM_SLICE
+	QUORUM_SLICE = dict()
+	for node in nodes:
+		parts = node.split(",")
+		if len(parts) < 5:
+			print("Skipping malformed node entry:", node)
+			continue
+		node_id, node_ip, node_port, node_n_c, node_e_c = parts[0], parts[1], parts[2], parts[3], parts[4]
+		QUORUM_SLICE[node_id] = {'ip': node_ip, 'port': int(node_port), 'n_c': int(node_n_c), 'e_c': int(node_e_c)}
+	connect_to_quorum_node(QUORUM_VERIFICATION_KEY, QUORUM_SLICE)
 
 def connect_to_ca():
 	sock = socket.socket()
@@ -189,6 +270,30 @@ def connect_to_ca():
 	if random.randint(0, 1):
 		proceed_init()
 
+# ======================
+# SERVER FLOW
+# ======================
+
+def handle_client(conn, addr):
+	try:
+		print(f"[+] Client connected from {addr}")
+
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+		shared_int = dh_server_exchange(conn)
+		# print("Shared Integer:", shared_int)
+		aes_key = kdf_aes_key(shared_int)
+		# print("AES Key:", aes_key.hex())
+
+		if not validate_aes_channel(conn, aes_key):
+			conn.close()
+			return
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+
+		conn.close()
+
+	except Exception as e:
+		print("Error:", e)
+		conn.close()
 
 def start_server():
 	sock = socket.socket()
@@ -199,13 +304,14 @@ def start_server():
 	PORT = sock.getsockname()[1]
 	print(f"[+] Base Meter Server listening on {HOST}:{PORT}")
 	a = list()
+
 	while True:
 		conn, addr = sock.accept()
-		a.append(addr)
-		print(f"[+] Client connected from {addr}")
-		print(f"[+] Current connected clients: {a}")
-		conn.close()
-		# handlCL_Elient(conn, addr)
+		threading.Thread(
+			target=handle_client,
+			args=(conn, addr),
+			daemon=True
+		).start()
 
 if __name__ == "__main__":
     connect_to_ca()

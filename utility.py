@@ -155,10 +155,12 @@ def start_server():
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]
 	print(f"[+] Utility Server listening on {HOST}:{PORT}")
-
+	a = list()
 	while True:
 		conn, addr = sock.accept()
-		print(f"[+] Client connected from {addr}")
+		a.append(addr)
+		# print(f"[+] Client connected from {addr}")
+		# print(f"[+] Current connected clients: {a}")
 		conn.close()
 		# handlCL_Elient(conn, addr)
 
