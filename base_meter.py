@@ -128,23 +128,28 @@ def connect_to_quorum_node(verification_key, quorum_slice):
 		node_port = node_info['port']
 		node_n_c = node_info['n_c']
 		node_e_c = node_info['e_c']
-		if node_id.startswith("b_"):
-			# try:
-			soc = socket.create_connection((node_ip, int(node_port)), timeout=3)
+		
+		# try:
+		soc = socket.create_connection((node_ip, int(node_port)), timeout=3)
 
-			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
-			shared_int = dh_client(soc)
-			aes_key = kdf_aes_key(shared_int)
+		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+		shared_int = dh_client(soc)
+		aes_key = kdf_aes_key(shared_int)
 
-			probe = aes_decrypt(aes_key, soc.recv(1024))
-			x, y = probe.split(",")
-			soc.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
-			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+		probe = aes_decrypt(aes_key, soc.recv(1024))
+		x, y = probe.split(",")
+		soc.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
-			soc.close()
-			# print(f"Connected to quorum node {node_id} at {node_ip}:{node_port}")
-			# except Exception as e:
-			# 	print(f"Could not connect to quorum node {node_id} at {node_ip}:{node_port}:", e)
+		msg = f"{ASSIGNED_ID},SELECTED,{verification_key}"
+		soc.sendall(
+			aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+		)
+
+		soc.close()
+		# print(f"Connected to quorum node {node_id} at {node_ip}:{node_port}")
+		# except Exception as e:
+		# 	print(f"Could not connect to quorum node {node_id} at {node_ip}:{node_port}:", e)
 
 def proceed_init():
 	print("proceeding to send INIT...")
@@ -202,7 +207,6 @@ def proceed_init():
 	QUORUM_VERIFICATION_KEY, nodes = ca_msg.split(";")[0], ca_msg.split(";")[1:]
 	sock.close()
 
-	# the meter will now cooncect to the nodes wiht the ip and port provided
 	global QUORUM_SLICE
 	QUORUM_SLICE = dict()
 	for node in nodes:
@@ -212,6 +216,7 @@ def proceed_init():
 			continue
 		node_id, node_ip, node_port, node_n_c, node_e_c = parts[0], parts[1], parts[2], parts[3], parts[4]
 		QUORUM_SLICE[node_id] = {'ip': node_ip, 'port': int(node_port), 'n_c': int(node_n_c), 'e_c': int(node_e_c)}
+	# the meter will now cooncect to the nodes wiht the ip and port provided
 	connect_to_quorum_node(QUORUM_VERIFICATION_KEY, QUORUM_SLICE)
 
 def connect_to_ca():
@@ -289,6 +294,37 @@ def handle_client(conn, addr):
 			return
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
+		data = aes_decrypt(aes_key, conn.recv(1024))
+		c_assigned_id, command, quorum_key = data.split(",")[0], data.split(",")[1], data.split(",")[2]
+
+		if command == "SELECTED":
+			# onnecting to CA to get the public key of the client node
+			sock = socket.socket()
+			sock.connect((CA_IP, CA_PORT))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+			shared_int = dh_client(sock)
+			aes_key = kdf_aes_key(shared_int)
+
+			probe = aes_decrypt(aes_key, sock.recv(1024))
+			x, y = probe.split(",")
+			sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+			msg = f"{c_assigned_id},GET_PUBLIC_KEY"
+			sock.sendall(
+				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+			)
+			data = aes_decrypt(aes_key, sock.recv(1024))
+			print(data)
+			# ca_msg, ca_sig = data.split("|")
+			# if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+			# 	print("CA signature verification failed")
+			# 	sock.close()
+			# 	conn.close()
+			# 	return
+			# client_n, client_e = map(int, ca_msg.split(","))
+			# sock.close()
+			# print(f"Obtained public key of client node: N={client_n}, E={client_e}")
+
 		conn.close()
 
 	except Exception as e:
@@ -303,8 +339,6 @@ def start_server():
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]
 	print(f"[+] Base Meter Server listening on {HOST}:{PORT}")
-	a = list()
-
 	while True:
 		conn, addr = sock.accept()
 		threading.Thread(
