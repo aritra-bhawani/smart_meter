@@ -230,7 +230,7 @@ def validate_aes_channel(conn, aes_key: bytes) -> bool:
     probe = ''.join(random.choices(string.ascii_letters, k=16))
     conn.sendall(aes_encrypt(aes_key, f"{probe},{probe[::-1]}"))
     resp = aes_decrypt(aes_key, conn.recv(1024))
-    a, b = resp.split(",")
+    a, b = resp.split(",", 1)
     return a == b[::-1]
 
 
@@ -299,7 +299,7 @@ def client_register(conn, addr, aes_key, data):
     sig_s = rsa_sign(d_s, n_s, u_asi_id)
     conn.sendall(aes_encrypt(aes_key, f"{u_asi_id}|{sig_s}"))
 
-    c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split("|")
+    c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split("|", 1)
     print(c_msg, c_sig)
 
     if client_type == "UTILITY":
@@ -325,7 +325,7 @@ def client_register(conn, addr, aes_key, data):
 
 def node_secondary_requests_validation(data):
     # try:
-    c_msg, c_sig = data.split("|")
+    c_msg, c_sig = data.split("|", 1)
     assigned_id = c_msg.split(",")[0]
     sig = int(c_sig)
     n_c, e_c = None, None
@@ -373,7 +373,6 @@ def handle_client(conn, addr):
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
         data = aes_decrypt(aes_key, conn.recv(1024))
-        print("CA Received Data:", data)
         # Client Registration Flow
         if not data.split("|")[-1].isdigit():
             client_register(conn, addr, aes_key, data)
@@ -384,8 +383,10 @@ def handle_client(conn, addr):
                 conn.close()
                 return
 
-            assigned_id = data.split("|")[0].split(",")[0]
-            query_type = data.split("|")[0].split(",")[1]
+            head = data.split("|", 1)[0]
+            parts = head.split(",", 2)
+            assigned_id = parts[0]
+            query_type = parts[1]
 
             if query_type == "INIT":
                 # here the server returns a random list of available base meters (a max of 100) and utility (a max of 50) with their port and RSA public keys
@@ -416,7 +417,8 @@ def handle_client(conn, addr):
                 if not data.split("|")[-1].isdigit():
                     client_register(conn, addr, aes_key, data)
                 else:
-                    selected_nodes = data.split("|")[0].split(",")
+                    head = data.split("|", 1)[0]
+                    selected_nodes = head.split(",")
                     response_data = []
                     con = sqlite3.connect(DB_FILE)
                     c = con.cursor()
@@ -429,6 +431,12 @@ def handle_client(conn, addr):
                     con.commit()
                     response_data.append(f"{quorum_validation_key}")
 
+                    # TODO: If it is the first time, mark the STAT of any previously quorum nodes as 0 for this base meter
+                    c.execute(
+                        "UPDATE QUORUM_MAP SET STAT=0 WHERE BASE_METER=?",
+                        (assigned_id,)
+                    )
+                    con.commit()
                     for node_id in selected_nodes:
                         if node_id.startswith("u_"):
                             c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?", (node_id,))
@@ -447,14 +455,15 @@ def handle_client(conn, addr):
                     sig_s = rsa_sign(CA_D, CA_N, data)
                     conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
 
-            elif query_type == "GET_SIGN_PARAMS":
-                print("GET_SIGN_PARAMS request received")
-                # retunr the  RSA public key of the base metter with assigned_id
+            elif query_type == "GET_PUBLIC_KEY":
+                # return the RSA public key of the base meter with assigned_id
                 con = sqlite3.connect(DB_FILE)
                 c = con.cursor()
+                head = data.split("|", 1)[0]
+                parts = head.split(",")
                 c.execute(
                     "SELECT N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
-                    (assigned_id,)
+                    (parts[2],)
                 )
                 row = c.fetchone()
                 con.close()
@@ -463,9 +472,37 @@ def handle_client(conn, addr):
                     response_data = f"{n_c},{e_c}"
                 else:
                     response_data = "NOT_FOUND"
-                print("Response Data:", response_data)    
+                # print("Response Data:", response_data)
                 sig_s = rsa_sign(CA_D, CA_N, response_data)
-                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))    
+                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+            elif query_type == "VALIDATE_QUORUM_KEY":
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                # check if the key matches the key of the base meter with assigned_id
+                head = data.split("|", 1)[0]
+                parts = head.split(",")
+                c.execute(
+                    "SELECT QUORUM_VALIDSTION_KEY FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                    (parts[2],)
+                )
+                row = c.fetchone()
+                if not row or row[0] != parts[3]:
+                    con.close()
+                    response_data = "QUORUM_KEY_INVALID"
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                    conn.close()
+                    return
+                # update the QUORUM_MAP table to mark respective field as validated
+                c.execute(
+                    "UPDATE QUORUM_MAP SET VALIDATED=1 WHERE BASE_METER=? AND QUORUM_NODE=?",
+                    (parts[2], assigned_id,)
+                )
+                con.commit()
+                con.close()
+                response_data = "QUORUM_KEY_VALIDATED"
+                sig_s = rsa_sign(CA_D, CA_N, response_data)
+                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
             conn.close()
     except Exception as e:
         print("Error:", e)
