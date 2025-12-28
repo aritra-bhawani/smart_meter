@@ -57,7 +57,7 @@ def dh_server_exchange(conn):
     return pow(A, secret, prime)
 
 def dh_client(sock):
-    prime, base = map(int, sock.recv(1024).decode().split(","))
+	prime, base = map(int, sock.recv(1024).decode().split(",", 1))
     secret = random.randint(5, 20)
 
     A = pow(base, secret, prime)
@@ -82,7 +82,7 @@ def validate_aes_channel(conn, aes_key: bytes) -> bool:
     probe = ''.join(random.choices(string.ascii_letters, k=16))
     conn.sendall(aes_encrypt(aes_key, f"{probe},{probe[::-1]}"))
     resp = aes_decrypt(aes_key, conn.recv(1024))
-    a, b = resp.split(",")
+	a, b = resp.split(",", 1)
     return a == b[::-1]
 
 def rsa_generate():
@@ -98,10 +98,13 @@ def rsa_generate():
     d = pow(e, -1, phi)
     return n, e, d
 
-
 def rsa_sign(d, n, msg):
     h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
     return pow(h, d, n)
+
+def rsa_verify(e, n, msg, sig):
+    h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
+    return h == pow(sig, e, n)
 
 # ======================
 # CLIENT FLOW
@@ -122,7 +125,7 @@ def connect_to_ca():
 	aes_key = kdf_aes_key(shared_int)
 
 	probe = aes_decrypt(aes_key, sock.recv(1024))
-	x, y = probe.split(",")
+	x, y = probe.split(",", 1)
 	sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
 
 	sock.sendall(aes_encrypt(aes_key, f"UTILITY,{UTILITY_ID},{UTILITY_PASS}"))
@@ -139,12 +142,12 @@ def connect_to_ca():
 	global CA_N, CA_E
 	CA_N, CA_E = map(
 		int,
-		aes_decrypt(aes_key, sock.recv(1024)).split(",")
+		aes_decrypt(aes_key, sock.recv(1024)).split(",", 1)
 	)
 
 	sock.sendall(aes_encrypt(aes_key, f"{CL_N},{CL_E}"))
 
-	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|")
+	aid, sig = aes_decrypt(aes_key, sock.recv(1024)).split("|", 1)
 	print("ASSIGNED_ID:", aid)
 	global ASSIGNED_ID
 	ASSIGNED_ID = aid
@@ -168,7 +171,7 @@ def connect_to_ca():
 
 def handle_client(conn, addr):
 	try:
-		print(f"[+] Client connected from {addr}")
+		print(f"[++] Client connected from {addr}")
 
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
 		shared_int = dh_server_exchange(conn)
@@ -181,27 +184,65 @@ def handle_client(conn, addr):
 			return
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
-		data = aes_decrypt(aes_key, conn.recv(1024))
-		c_assigned_id, command, quorum_key = data.split(",")[0], data.split(",")[1], data.split(",")[2]
+		data = aes_decrypt(aes_key, conn.recv(2048))
+		client_msg, client_sig = data.split("|", 1)
+		c_assigned_id, command, quorum_key = client_msg.split(",", 2)
 
 		if command == "SELECTED":
-			# onnecting to CA to get the public key of the client node
+			# Connecting to CA to get the public key of the client node ============== START
 			sock = socket.socket()
 			sock.connect((CA_IP, CA_PORT))
 			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
 			shared_int = dh_client(sock)
 			aes_key = kdf_aes_key(shared_int)
 
-			probe = aes_decrypt(aes_key, sock.recv(1024))
-			x, y = probe.split(",")
+			probe = aes_decrypt(aes_key, sock.recv(2048))
+			x, y = probe.split(",", 1)
 			sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
 			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
-			msg = f"{c_assigned_id},GET_PUBLIC_KEY"
+			
+			msg = f"{ASSIGNED_ID},GET_PUBLIC_KEY,{c_assigned_id}"
 			sock.sendall(
 				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 			)
-			data = aes_decrypt(aes_key, sock.recv(1024))
+			data = aes_decrypt(aes_key, sock.recv(2048))
+			# print(data)
+			ca_msg, ca_sig = data.split("|", 1)
+			if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+				print("CA signature verification failed")
+				sock.close()
+				conn.close()
+				return
+			client_n, client_e = map(int, ca_msg.split(",", 1))
+			sock.close()
+			# Connecting to CA to get the public key of the client node ============== END
+			# Verfyfy client signature 
+			if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+				print("CA signature verification failed")
+				sock.close()
+				conn.close()
+				return
+			# Connecting to CA to validate the quorum key and get the quorum of this node ============ START
+			sock = socket.socket()
+			sock.connect((CA_IP, CA_PORT))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+			shared_int = dh_client(sock)
+			aes_key = kdf_aes_key(shared_int)
+
+			probe = aes_decrypt(aes_key, sock.recv(2048))
+			x, y = probe.split(",", 1)
+			sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+			# Send quorum key for validation
+			msg = f"{ASSIGNED_ID},VALIDATE_QUORUM_KEY,{c_assigned_id},{quorum_key}"
+			sock.sendall(
+				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+			)
+			data = aes_decrypt(aes_key, sock.recv(2048))
 			print(data)
+			ca_msg, ca_sig = data.split("|", 1)
+
+			sock.close()
 
 		conn.close()
 
