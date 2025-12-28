@@ -8,6 +8,7 @@ import math
 from Crypto.Cipher import AES
 import time
 import threading
+import string
 
 # For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
@@ -32,7 +33,9 @@ UTILITY_ID = random.randint(1, 1000)
 # Load primes
 # ======================
 with open("prime.json", "r") as f:
-    PRIMES_SMALL = json.load(f)["small"]
+    PRIMES = json.load(f)
+PRIMES_SMALL = PRIMES["small"]
+PRIMES_BIG = PRIMES["big"]
 
 # ======================
 # CRYPTO
@@ -41,6 +44,17 @@ with open("prime.json", "r") as f:
 def kdf_aes_key(shared_int: int) -> bytes:
     return hashlib.sha256(str(shared_int).encode()).digest()[:16]
 
+def dh_server_exchange(conn):
+    prime = random.choice(PRIMES_BIG)
+    base = random.randint(10**8, 10**9)
+    secret = random.randint(5, 20)
+
+    conn.sendall(f"{prime},{base}".encode())
+    A = int(conn.recv(1024).decode())
+    B = pow(base, secret, prime)
+    conn.sendall(str(B).encode())
+
+    return pow(A, secret, prime)
 
 def dh_client(sock):
     prime, base = map(int, sock.recv(1024).decode().split(","))
@@ -51,7 +65,6 @@ def dh_client(sock):
 
     B = int(sock.recv(1024).decode())
     return pow(B, secret, prime)
-
 
 def aes_encrypt(key: bytes, msg: str) -> bytes:
     cipher = AES.new(key, AES.MODE_ECB)
@@ -65,6 +78,12 @@ def aes_decrypt(key: bytes, data: bytes) -> str:
     raw = cipher.decrypt(base64.b64decode(data))
     return raw[:-raw[-1]].decode()
 
+def validate_aes_channel(conn, aes_key: bytes) -> bool:
+    probe = ''.join(random.choices(string.ascii_letters, k=16))
+    conn.sendall(aes_encrypt(aes_key, f"{probe},{probe[::-1]}"))
+    resp = aes_decrypt(aes_key, conn.recv(1024))
+    a, b = resp.split(",")
+    return a == b[::-1]
 
 def rsa_generate():
     p, q = random.sample(PRIMES_SMALL, 2)
@@ -147,6 +166,49 @@ def connect_to_ca():
 	# 	print(f"  {name}: {value} (Type: {type(value).__name__})")
 	sock.close()
 
+def handle_client(conn, addr):
+	try:
+		print(f"[+] Client connected from {addr}")
+
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+		shared_int = dh_server_exchange(conn)
+		# print("Shared Integer:", shared_int)
+		aes_key = kdf_aes_key(shared_int)
+		# print("AES Key:", aes_key.hex())
+
+		if not validate_aes_channel(conn, aes_key):
+			conn.close()
+			return
+		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+
+		data = aes_decrypt(aes_key, conn.recv(1024))
+		c_assigned_id, command, quorum_key = data.split(",")[0], data.split(",")[1], data.split(",")[2]
+
+		if command == "SELECTED":
+			# onnecting to CA to get the public key of the client node
+			sock = socket.socket()
+			sock.connect((CA_IP, CA_PORT))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+			shared_int = dh_client(sock)
+			aes_key = kdf_aes_key(shared_int)
+
+			probe = aes_decrypt(aes_key, sock.recv(1024))
+			x, y = probe.split(",")
+			sock.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
+			# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+			msg = f"{c_assigned_id},GET_PUBLIC_KEY"
+			sock.sendall(
+				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+			)
+			data = aes_decrypt(aes_key, sock.recv(1024))
+			print(data)
+
+		conn.close()
+
+	except Exception as e:
+		print("Error:", e)
+		conn.close()
+
 def start_server():
 	sock = socket.socket()
 	sock.bind(("0.0.0.0", 0))
@@ -155,14 +217,13 @@ def start_server():
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]
 	print(f"[+] Utility Server listening on {HOST}:{PORT}")
-	a = list()
 	while True:
 		conn, addr = sock.accept()
-		a.append(addr)
-		# print(f"[+] Client connected from {addr}")
-		# print(f"[+] Current connected clients: {a}")
-		conn.close()
-		# handlCL_Elient(conn, addr)
+		threading.Thread(
+			target=handle_client,
+			args=(conn, addr),
+			daemon=True
+		).start()
 
 if __name__ == "__main__":
     connect_to_ca()

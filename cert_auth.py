@@ -373,6 +373,7 @@ def handle_client(conn, addr):
 		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
         data = aes_decrypt(aes_key, conn.recv(1024))
+        print("CA Received Data:", data)
         # Client Registration Flow
         if not data.split("|")[-1].isdigit():
             client_register(conn, addr, aes_key, data)
@@ -445,6 +446,26 @@ def handle_client(conn, addr):
                     data = str(';'.join(map(str, response_data)))
                     sig_s = rsa_sign(CA_D, CA_N, data)
                     conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
+
+            elif query_type == "GET_SIGN_PARAMS":
+                print("GET_SIGN_PARAMS request received")
+                # retunr the  RSA public key of the base metter with assigned_id
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                c.execute(
+                    "SELECT N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                    (assigned_id,)
+                )
+                row = c.fetchone()
+                con.close()
+                if row:
+                    n_c, e_c = row
+                    response_data = f"{n_c},{e_c}"
+                else:
+                    response_data = "NOT_FOUND"
+                print("Response Data:", response_data)    
+                sig_s = rsa_sign(CA_D, CA_N, response_data)
+                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))    
             conn.close()
     except Exception as e:
         print("Error:", e)

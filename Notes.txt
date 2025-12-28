@@ -20,8 +20,8 @@ docker exec -it smart_meter-ca-1 bash
 docker exec -it smart_meter-utility-1 bash -c 'echo $HOSTNAME'
 
 
-
-
+https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption
+https://www.kaggle.com/datasets/jeanmidev/smart-meters-in-london?resource=download
 
 
 
