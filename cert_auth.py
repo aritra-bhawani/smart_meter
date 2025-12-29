@@ -1,29 +1,29 @@
 import os
 import sys
-import math
 import socket
 import threading
 import sqlite3
 import json
-import random
 import string
-import hashlib
-import base64
 import secrets
-import string
-from Crypto.Cipher import AES
+import time
+from _crypto import (
+    kdf_aes_key,
+    dh_server_exchange,
+    dh_client,
+    aes_encrypt,
+    aes_decrypt,
+    validate_aes_channel,
+    rsa_generate,
+    rsa_sign,
+    rsa_verify,
+)
 
 DB_FILE = "certifying_authority_DB.db"
 HOST = ""
 PORT = 5005
 
-# ======================
-# Load primes once
-# ======================
-with open("prime.json", "r") as f:
-    PRIMES = json.load(f)
-PRIMES_SMALL = PRIMES["small"]
-PRIMES_BIG = PRIMES["big"]
+QUORUM_PEER_SIZE = 6
 
 # ======================
 # DB INIT
@@ -94,6 +94,8 @@ def init_db():
             BASE_METER TEXT,
             QUORUM_NODE TEXT,
             VALIDATED BOOLEAN DEFAULT FALSE,
+            PROPOSED_PEERS TEXT,
+            SELECTED_PEERS TEXT,
             STAT BOOLEAN DEFAULT FALSE
             )""")
 
@@ -192,70 +194,7 @@ def update_base_meter_status(uid, status, id=None, ip=None, port=None, n_c=None,
     con.commit()
     con.close()
 # for base meter end
-# ======================
-# CRYPTO
-# ======================
-
-def kdf_aes_key(shared_int: int) -> bytes:
-    return hashlib.sha256(str(shared_int).encode()).digest()[:16]
-
-
-def dh_server_exchange(conn):
-    prime = random.choice(PRIMES_BIG)
-    base = random.randint(10**8, 10**9)
-    secret = random.randint(5, 20)
-
-    conn.sendall(f"{prime},{base}".encode())
-    A = int(conn.recv(1024).decode())
-    B = pow(base, secret, prime)
-    conn.sendall(str(B).encode())
-
-    return pow(A, secret, prime)
-
-
-def aes_encrypt(key: bytes, msg: str) -> bytes:
-    cipher = AES.new(key, AES.MODE_ECB)
-    pad = 16 - (len(msg) % 16)
-    msg_padded = msg + chr(pad) * pad
-    return base64.b64encode(cipher.encrypt(msg_padded.encode()))
-
-
-def aes_decrypt(key: bytes, data: bytes) -> str:
-    cipher = AES.new(key, AES.MODE_ECB)
-    raw = cipher.decrypt(base64.b64decode(data))
-    return raw[:-raw[-1]].decode()
-
-
-def validate_aes_channel(conn, aes_key: bytes) -> bool:
-    probe = ''.join(random.choices(string.ascii_letters, k=16))
-    conn.sendall(aes_encrypt(aes_key, f"{probe},{probe[::-1]}"))
-    resp = aes_decrypt(aes_key, conn.recv(1024))
-    a, b = resp.split(",", 1)
-    return a == b[::-1]
-
-
-def rsa_generate():
-    p, q = random.sample(PRIMES_SMALL, 2)
-    n = p * q
-    phi = (p - 1) * (q - 1)
-
-    while True:
-        e = random.randint(3, phi - 1)
-        if math.gcd(e, phi) == 1:
-            break
-
-    d = pow(e, -1, phi)
-    return n, e, d
-
-
-def rsa_sign(d, n, msg):
-    h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
-    return pow(h, d, n)
-
-
-def rsa_verify(e, n, msg, sig):
-    h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
-    return h == pow(sig, e, n)
+# crypto utilities are provided by _crypto.py
 
 # ======================
 # CLIENT SESSION
@@ -309,7 +248,6 @@ def client_register(conn, addr, aes_key, data):
             return
         else:
             update_utility_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
-            # update_utility_status(uid, 1, ip=addr[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
     if client_type == "BASE_METER":
         if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
             update_base_meter_status(uid, 0)
@@ -317,14 +255,12 @@ def client_register(conn, addr, aes_key, data):
             return
         else:
             update_base_meter_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
-            # update_base_meter_status(uid, 1, ip=addr[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
     # for name, value in locals().items():
     #     print(f"  {name}: {value} (Type: {type(value).__name__})")
     print("[✓] "+("Utility" if client_type == "UTILITY" else "Base Meter")+f" {uid} authenticated")
     conn.close()
 
 def node_secondary_requests_validation(data):
-    # try:
     c_msg, c_sig = data.split("|", 1)
     assigned_id = c_msg.split(",")[0]
     sig = int(c_sig)
@@ -355,8 +291,6 @@ def node_secondary_requests_validation(data):
         return False
     print("[✓] Client with ASSIGNED_ID", assigned_id, "verified")
     return True
-    # except:
-    #     return False
 
 def handle_client(conn, addr):
     try:
@@ -411,7 +345,6 @@ def handle_client(conn, addr):
                 data = str(';'.join(map(str, response_data)))
                 sig_s = rsa_sign(CA_D, CA_N, data)
                 conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
-                # aes_encrypt(aes_key, conn.sendall(b"|".join(response_data)))
                 data = aes_decrypt(aes_key, conn.recv(1024))
                 # print("Received Data:", data)
                 if not data.split("|")[-1].isdigit():
@@ -455,6 +388,61 @@ def handle_client(conn, addr):
                     sig_s = rsa_sign(CA_D, CA_N, data)
                     conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
 
+            elif query_type == "QUORUM_VALIDATION":
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                # check if the key matches the key of the base meter with assigned_id
+                head = data.split("|", 1)[0]
+                parts = head.split(",")
+                c.execute(
+                    "SELECT * FROM QUORUM_MAP WHERE QUORUM_NODE=? AND BASE_METER=?",
+                    (assigned_id, parts[2],)
+                )
+                row1 = c.fetchone()
+                c.execute(
+                    "SELECT QUORUM_VALIDSTION_KEY FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                    (parts[2],)
+                )
+                row2 = c.fetchone()
+                if not row1 or not row2 or row2[0] != parts[3]:
+                    con.close()
+                    response_data = "ERROR,QUORUM_KEY_INVALID"
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                    conn.close()
+                    return
+                # update the QUORUM_MAP table to mark respective field as validated
+                c.execute(
+                    "UPDATE QUORUM_MAP SET VALIDATED=1 WHERE BASE_METER=? AND QUORUM_NODE=?",
+                    (parts[2], assigned_id,)
+                )
+                con.commit()
+                for i in range(10):
+                    # get list of random QUORUM_PEER_SIZE+1 quorum nodes apart from the current nodes from the QUORUM_MAP table whose VALIDATED is TRUE if not found then make a 1 sec delayed call till 5 times else break and get the ids
+                    c.execute(
+                        "SELECT QUORUM_NODE FROM QUORUM_MAP WHERE BASE_METER=? AND VALIDATED=1 AND QUORUM_NODE!=? ORDER BY RANDOM()",
+                        (parts[2], assigned_id,)
+                    )
+                    rows = c.fetchall()
+                    if len(rows) > QUORUM_PEER_SIZE*1.3:
+                        break
+                    time.sleep(1.5)
+                if len(rows) > QUORUM_PEER_SIZE*1.3:
+                    peer_nodes = [row[0] for row in rows][:QUORUM_PEER_SIZE+1]
+                    c.execute(
+                        "UPDATE QUORUM_MAP SET PROPOSED_PEERS=? WHERE BASE_METER=? AND QUORUM_NODE=?",
+                        (','.join(peer_nodes), parts[2], assigned_id,)
+                    )
+                    con.commit()
+                    response_data = "SUCCESS,"+(','.join(peer_nodes))
+                else:
+                    response_data = "ERROR,INSUFFICIENT_VALIDATED_NODES"
+                con.close()
+                sig_s = rsa_sign(CA_D, CA_N, response_data)
+                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                conn.close()
+
+            # Miscellaneous operations
             elif query_type == "GET_PUBLIC_KEY":
                 # return the RSA public key of the base meter with assigned_id
                 con = sqlite3.connect(DB_FILE)
@@ -475,37 +463,12 @@ def handle_client(conn, addr):
                 # print("Response Data:", response_data)
                 sig_s = rsa_sign(CA_D, CA_N, response_data)
                 conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
-            elif query_type == "VALIDATE_QUORUM_KEY":
-                con = sqlite3.connect(DB_FILE)
-                c = con.cursor()
-                # check if the key matches the key of the base meter with assigned_id
-                head = data.split("|", 1)[0]
-                parts = head.split(",")
-                c.execute(
-                    "SELECT QUORUM_VALIDSTION_KEY FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
-                    (parts[2],)
-                )
-                row = c.fetchone()
-                if not row or row[0] != parts[3]:
-                    con.close()
-                    response_data = "QUORUM_KEY_INVALID"
-                    sig_s = rsa_sign(CA_D, CA_N, response_data)
-                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
-                    conn.close()
-                    return
-                # update the QUORUM_MAP table to mark respective field as validated
-                c.execute(
-                    "UPDATE QUORUM_MAP SET VALIDATED=1 WHERE BASE_METER=? AND QUORUM_NODE=?",
-                    (parts[2], assigned_id,)
-                )
-                con.commit()
-                con.close()
-                response_data = "QUORUM_KEY_VALIDATED"
-                sig_s = rsa_sign(CA_D, CA_N, response_data)
-                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
             conn.close()
     except Exception as e:
         print("Error:", e)
+        response_data = "ERROR,CA_SIDE_EXCEPTION"
+        sig_s = rsa_sign(CA_D, CA_N, response_data)
+        conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
         conn.close()
 
 # ======================
