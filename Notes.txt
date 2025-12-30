@@ -1,0 +1,28 @@
+Strt the cert_auth > mdms > base_meter > meter
+
+colima start
+
+--------
+docker-compose down -v
+docker image rm smart_meter-ca smart_meter-utility smart_meter-base_meter || true
+--------
+docker-compose down
+docker-compose build --no-cache 
+docker-compose up --scale utility=3 --scale base_meter=3
+docker-compose up --scale utility=20 --scale base_meter=80
+--------
+docker ps -a
+
+docker cp smart_meter-ca-1:/app/certifying_authority_DB.db ./certifying_authority_DB.db
+
+docker exec -it smart_meter-ca-1 bash
+
+docker exec -it smart_meter-utility-1 bash -c 'echo $HOSTNAME'
+
+
+https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption
+https://www.kaggle.com/datasets/jeanmidev/smart-meters-in-london?resource=download
+
+
+
+

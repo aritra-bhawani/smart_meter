@@ -1,302 +1,552 @@
-from termcolor import colored
-print colored('Initializing Dependencies...','yellow')
-import socket
-from thread import *
-from Crypto.Cipher import AES
-import base64
-import hashlib
-import random
-import string
-import time
 import os
 import sys
+import socket
+import threading
 import sqlite3
+import json
+import string
+import secrets
+import time
+from _crypto import (
+    kdf_aes_key,
+    dh_server_exchange,
+    dh_client,
+    aes_encrypt,
+    aes_decrypt,
+    validate_aes_channel,
+    rsa_generate,
+    rsa_sign,
+    rsa_verify,
+)
 
-if __name__=="__main__":
-	#Intializing 7 Users 
-	u=[[23,1234],[24,12345],[25,4321],[26,54321],[27,1234],[28,4321],[29,12345]]
-	con=sqlite3.connect('data_base.db')
-	c = con.cursor()
-	c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-	r = []
-	for i in c.fetchall():
-		r.append(i[0])
-	if "DEVICES" not in r:
-		c.execute("""CREATE TABLE DEVICES (
-					D_ID INTEGER PRIMARY KEY,
-					D_KEY INTEGER,
-					D_STAT BOOLEAN
-					)""")
-		for i in u:
-			c.execute("INSERT INTO DEVICES (D_ID, D_KEY, D_STAT) values (?, ?, ?)",(i[0],i[1],0))
-	if "LEDGER" not in r:
-		c.execute("""CREATE TABLE LEDGER (
-					SL_NO INTEGER PRIMARY KEY AUTOINCREMENT,
-					D_ID INTEGER,
-					START_TIME TIMESTAMP,
-					STOP_TIME TIMESTAMP,
-					UNIT_SLAB FLOAT,
-					HASH TEXT
-					)""")
-	con.commit()
-	con.close()	
+DB_FILE = "certifying_authority_DB.db"
+HOST = ""
+PORT = 5005
 
-def d_verify(d_id,key):
-	con=sqlite3.connect('data_base.db')
-	c = con.cursor()
-	c.execute("SELECT * FROM DEVICES where D_ID = ?", (d_id,))
-	result = c.fetchall()
-	con.commit()
-	con.close()
-	print "Initial Device Status in DB : ",result
-	if len(result)==0:
-		return ([False,"No Device Found By This ID!\nTry again."])
-	else:
-		if result[0][1]!=key:
-			return ([False,"Wrong Credentials!\nTry again."])
-		elif result[0][2]!=0:
-			return ([False,"Device Already In Use!\nTry again."])
-		else:
-			return([True,"Device Verified Successfully!\nSharing Key..."])
+QUORUM_PEER_SIZE = 6
 
-def d_stat_up(d_id,val):
-	con=sqlite3.connect('data_base.db')
-	c = con.cursor()
-	c.execute("UPDATE DEVICES SET D_STAT = ? WHERE D_ID = ?", (val,d_id))
-	c.execute("SELECT * FROM DEVICES WHERE D_ID=?",(d_id,))
-	print "Updated Device Status in DB : ",c.fetchall()
-	con.commit()
-	con.close()
-	return True
+# ======================
+# DB INIT
+# ======================
 
-def d_add(d_id,start_time,stop_time,unit_slab,has):
-	con=sqlite3.connect('data_base.db')
-	c = con.cursor()
-	c.execute("INSERT INTO LEDGER (D_ID, START_TIME, STOP_TIME, UNIT_SLAB, HASH) values (?, ?, ?, ?, ?)",(d_id,start_time,stop_time,unit_slab,has))
-	con.commit()
-	con.close()
+def init_db():
+    with open("sample_space.json", "r") as f:
+        sample_space = json.load(f)
 
-def verify(conn,n_id):
-	ar=(conn.recv(1024).rstrip("\n\r")).split(',') #2-2
-	print ("Device ID => "+str(ar[0])+"\nDevice Key => "+str(ar[-1]))
-	result=d_verify(int(ar[0]),int(ar[-1]))
-	if result[0]:
-		conn.send(result[1])#3-1
-		return ([True,int(ar[0])])
-	else:
-		conn.send(result[1])#3-1
-		connections.pop(n_id)
-		return ([False,int(ar[0])])	
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    r = [i[0] for i in c.fetchall()]
 
-def DHK_exc_s(serverSecret,conn,d_id,n_id):
-	sharedPrime=9999999900000001 # a random prime to be chosen
-	sharedBase=random.randint(100000000,999999999) #102124190 # a random number
-	conn.send(str(sharedPrime)+","+str(sharedBase)) #5-1
-	try:
-		A=long(conn.recv(1024).rstrip("\n\r")) #6-2
-		B=(sharedBase ** serverSecret) % sharedPrime 
-	except ValueError:
-		connections.pop(n_id)
-		print ("Error Occured!")
-		print "Connections List : ",connections
-		conn.close()
-		print ("Connection with "+str(d_id)+" is Closed")
-	conn.send(str(B)) #7-1
-	shared_key = (A**serverSecret) % sharedPrime
-	return shared_key
+    if "CONSUMER_TABLE" not in r:
+        c.execute("""CREATE TABLE CONSUMER_TABLE (
+            CONSUMER_ID INTEGER PRIMARY KEY,
+            CONSUMER_NAME TEXT,
+            CONSUMER_PHONE_EMAIL TEXT,
+            CONSUMER_PHONE_NUMBER INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in sample_space["users"]:
+            c.execute(
+                "INSERT INTO CONSUMER_TABLE (CONSUMER_ID, CONSUMER_NAME, CONSUMER_PHONE_EMAIL, CONSUMER_PHONE_NUMBER, STAT) values (?, ?, ?, ?, ?)",
+                (i["id"], i["name"], i["email"], i["ph_no"], 0),
+            )
 
-def enc_dec(q,key,s):
-	if q=="e":
-		BLOCK_SIZE = 16
-		PADDING = '{'
-		pad = lambda s: s + (BLOCK_SIZE - len(s) % BLOCK_SIZE) * PADDING
-		EncodeAES = lambda c,s: base64.b64encode(c.encrypt(pad(s)))
-		cipher = AES.new(key)
-		encode = EncodeAES(cipher, s)
-		return encode
-	elif q=="d":
-		PADDING = '{'
-		DecodeAES = lambda c,e: c.decrypt(base64.b64decode(e)).rstrip(PADDING)	
-		cipher = AES.new(key)
-		decode = DecodeAES(cipher,s)
-		return decode
+    if "UTILITY_TABLE" not in r:
+        c.execute("""CREATE TABLE UTILITY_TABLE (
+            UTILITY_ID INTEGER PRIMARY KEY,
+            UTILITY_PASS TEXT,
+            ASSIGNED_ID INTEGER,
+            IP TEXT,
+            PORT INTEGER,
+            N_C INTEGER,
+            E_C INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in range(1000):
+            c.execute(
+                "INSERT INTO UTILITY_TABLE (UTILITY_ID, UTILITY_PASS, IP, PORT, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?)",
+                (i, "12345", None, None, None, None, 0),
+            )
 
-def compute_gcd(x, y): # finding GCD
-	smaller=x if(x<y) else y
-	for i in range(1, smaller+1):
-		if((x%i==0) and (y%i==0)):
-			gcd=i
-	return gcd
+    if "BASE_METER_TABLE" not in r:
+        c.execute("""CREATE TABLE BASE_METER_TABLE (
+            BASE_METER_ID INTEGER PRIMARY KEY,
+            BASE_METER_PASS TEXT,
+            ASSIGNED_ID INTEGER,
+            IP TEXT,
+            PORT INTEGER,
+            SERVING_METERS TEXT,
+            QUORUM_VALIDSTION_KEY TEXT,
+            QUORUM_SLICE TEXT,
+            N_C INTEGER,
+            E_C INTEGER,
+            STAT BOOLEAN
+            )""")
+        for i in range(1000):
+            c.execute(
+                "INSERT INTO BASE_METER_TABLE (BASE_METER_ID, BASE_METER_PASS, ASSIGNED_ID, IP, PORT, SERVING_METERS, QUORUM_VALIDSTION_KEY, QUORUM_SLICE, N_C, E_C, STAT) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (i, "12345", None, None, None, None, None, None, None, None, 0),
+            )
 
-def inverse(x, m): # finding the inverse
-	a,b,u=0,m,1
-	while x > 0:
-		q = b//x # integer division
-		x,a,b,u = b%x, u,x, a-q*u
-	if b == 1:
-		return a%m
+    if "QUORUM_MAP" not in r:
+        c.execute("""CREATE TABLE QUORUM_MAP (
+            BASE_METER TEXT,
+            QUORUM_NODE TEXT,
+            VALIDATED BOOLEAN DEFAULT FALSE,
+            PROPOSED_PEERS TEXT,
+            SELECTED_PEERS TEXT,
+            STAT BOOLEAN DEFAULT FALSE
+            )""")
 
-def dig_sig_para():
-	# two prime numbers
-	p,q=97,89 # to be randomly chosen
-	n=p*q
-	fi=(p-1)*(q-1)
-	ar=[]
-	for i in range(1,fi):
-		if compute_gcd(i, fi) == 1:
-			ar.append(i)
-	e = ar[random.randint(int(len(ar)/4),len(ar))]
-	d = inverse(e,fi)
-	return (n,e,d)
+    if "QUORUM_PEERS_MAP" not in r:
+        c.execute("""CREATE TABLE QUORUM_PEERS_MAP (
+            BASE_METER TEXT,
+            QUORUM_NODE TEXT,
+            PEER_NODE TEXT,
+            STAT BOOLEAN DEFAULT FALSE
+            )""")
 
-def dig_sig_gen(q,d_e,n,string,sg=0):
-	h_val = int(hashlib.sha256(string.encode('utf-8')).hexdigest(), 16) % 10**3 #generating 3 bit hash
-	if q=="g":
-		sg_cal = (h_val**d_e) % n
-		# print (h_val)
-		return sg_cal
-	elif q=="v":
-		h_cal = (sg**d_e)%n
-		# print (h_val,h_cal)
-		if h_val==h_cal : return True
-		else : return False
+    con.commit()
+    con.close()
 
-def close_conn(d_id,n_id):
-	print ("Token Verification : Failed\nConnection with "+str(d_id)+" is Closed")
-	d_stat_up(d_id,0)
-	connections.pop(n_id)
-	print "Connections List : ",connections
-	conn.close()
+# ======================
+# DB OPS
+# ======================
 
-#==========================
-def base_node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
-	print('base node identified')
-	b_n_ar.append(n_id)
-	print "Base Nodes : ",b_n_ar
+def random_id(leng=16):
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(leng))
 
+# for utility start
+def verify_utility(uid, upass):
+    print("Req Utility:", uid)
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    c.execute(
+        "SELECT UTILITY_PASS, STAT FROM UTILITY_TABLE WHERE UTILITY_ID=?",
+        (uid,)
+    )
+    row = c.fetchone()
+    con.close()
 
-def node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c):
-	print('node identified')
-	old_hash_value,t_id='abc',0 # To Be Used During Reading Verification
-	data=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n\r")).split(',') #14-2
-	n_ip,n_port=data[0],data[1]
-	print('Received IP and port address : '+n_ip+' & '+n_port+'\nSending list of base nodes')
-	conn.send(enc_dec('e',shared_key,','.join(str(x) for x in b_n_ar)))# 15-1
-	data=[i.split(':') for i in enc_dec('d',shared_key,conn.recv(1024).rstrip("\n\r")).split('|')] #16-2
-	print ('Nominated based nodes along with sharedBase for '+str(n_id)+'|'+str(d_id)+' => '+str(data))
-	for i in data:
-		connections[int(i[0])].send(enc_dec('e',connections_credentials[int(i[0])]['shared_key'],str(n_id)+','+str(n_ip)+','+str(n_port)+','+str(i[1])+','+str(i[0])))# sending the required crenentials to the respective base_nodes
-	print ("Credentials have been sent to the respected Base Nodes")
+    if not row:
+        return False, "Utility not found"
+    if row[0] != upass:
+        return False, "Invalid credentials"
+    if row[1]:
+        return False, "Utility already active"
+    return True, "OK"
 
+def update_utility_status(uid, status, id=None, ip=None, port=None, n_c=None, e_c=None):
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    if status and id is not None:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, ASSIGNED_ID=? WHERE UTILITY_ID=?",
+            (status, id, uid)
+        )
+    if status and ip is not None:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE UTILITY_ID=?",
+            (status, ip, port, n_c, e_c, uid)
+        )
+    if status != 1:
+        c.execute(
+            "UPDATE UTILITY_TABLE SET STAT=?, ASSIGNED_ID=? WHERE UTILITY_ID=?",
+            (status, None, uid)
+        )
+    con.commit()
+    con.close()
+    # for name, value in locals().items():
+    #     print(f"  {name}: {value} (Type: {type(value).__name__})")
+# for utility end
+# for base meter start
+def verify_base_meter(uid, upass):
+    print("Req Base Meter:", uid)
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    c.execute(
+        "SELECT BASE_METER_PASS, STAT FROM BASE_METER_TABLE WHERE BASE_METER_ID=?",
+        (uid,)
+    )
+    row = c.fetchone()
+    con.close()
 
+    if not row:
+        return False, "Base Meter not found"
+    if row[0] != upass:
+        return False, "Invalid credentials"
+    if row[1]:
+        return False, "Base Meter already active"
+    return True, "OK"
 
-def client_thread(n_id,conn):
-	d_id,key = '',''
-	f=0 # flags
-	shared_key,serverSecret = '',random.randint(5,20) # used in Diffie-hellman
-	n_s,e_s,d = 0,0,0
-	n_c,e_c = 0,0 # RSA Signature Parameters of Client
-	conn.send('C') # 1-1
-	while True:
-		if f==0:
-			# Device Verification
-			v=verify(conn,n_id)
-			time.sleep(.1)
-			if v[0]:
-				conn.send('S') # 4-1 - success
-				d_id=v[1]
-			else:
-				conn.send('F') # 4-1 - failed
-				break
+def update_base_meter_status(uid, status, id=None, ip=None, port=None, n_c=None, e_c=None):
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    if status and id is not None:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, ASSIGNED_ID=? WHERE BASE_METER_ID=?",
+            (status, id, uid)
+        )
+    if status and ip is not None:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE BASE_METER_ID=?",
+            (status, ip, port, n_c, e_c, uid)
+        )
+    if status != 1:
+        c.execute(
+            "UPDATE BASE_METER_TABLE SET STAT=?, ASSIGNED_ID=? WHERE BASE_METER_ID=?",
+            (status, None, uid)
+        )
+    con.commit()
+    con.close()
+# for base meter end
+# crypto utilities are provided by _crypto.py
 
-			# Key exchange using Diffie-Helman
-			kc=0
-			while kc==0:
-				shared_key=str(DHK_exc_s(serverSecret,conn,d_id,n_id))
-				# kl=len(shared_key)
-				if len(shared_key)==16:
-					#checking key symmetricity
-					vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)]) #generating 16 bit string
-					conn.send(enc_dec('e',shared_key,vs+","+vs[::-1])) #8-1 #encrypting and sending the value ("string,reverse of string")
-					ar=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n")).split(',') #9-2
-					# print ar
-					if ar[0]==ar[1][::-1]:
-						print("Key Shared and Validated Successfully")	
-						kc=1
-					else:
-						print("Key Validation Failed")
-			print ("Shared Key => "+str(shared_key))
-			print colored("***** Data Channel To "+str(n_id)+" is Encrypted *****",'red')
+# ======================
+# CLIENT SESSION
+# ======================
 
-			#Computing parameters for generating digital signature using RSA
-			print ("Generating Parameters for Digital Signature...(Wait)")
+def client_register(conn, addr, aes_key, data):
+    data = data.split(",")
+    client_type, uid, upass =  data[0], int(data[1]), data[2]
 
-			ti=time.time()
-			n_s,e_s,d = dig_sig_para()
-			print ("Time Taken to Generate Parameters : "+str(time.time()-ti))
-			print("Signing Parameters of Server : \n n (server) => "+str(n_s)+"\n e (server) => "+str(e_s)+"\n d (server:private key) => "+str(d))
-			conn.send(enc_dec('e',shared_key,str(n_s)+","+str(e_s))) #10-1
-			ar=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n")).split(',') #11-2
-			n_c,e_c=int(ar[0]),int(ar[1])
+    # Utility Authentication - START
+    if client_type == "UTILITY":
+        ok, msg = verify_utility(uid, upass)
+        conn.sendall(aes_encrypt(aes_key, msg))
+        if not ok:
+            conn.close()
+            return
+        u_asi_id = 'u_' + random_id()
+        update_utility_status(uid, 1, id=u_asi_id)
+    # Utility Authentication - END
+    # Base Meter Authentication - START
+    if client_type == "BASE_METER":
+        ok, msg = verify_base_meter(uid, upass)
+        conn.sendall(aes_encrypt(aes_key, msg))
+        if not ok:
+            conn.close()
+            return
+        u_asi_id = 'b_' + random_id()
+        update_base_meter_status(uid, 1, id=u_asi_id)
+    # Base Meter Authentication - END
 
-			#Verifying the Signature of Server
-			vs=''.join([random.choice(string.ascii_letters + string.digits) for n in xrange(16)])
-			sg=dig_sig_gen('g',d,n_s,vs)
-			conn.send(enc_dec('e',shared_key,vs+","+str(sg))) #12-1
+    # RSA auth exchange - START
+    n_s, e_s, d_s = [CA_N, CA_E, CA_D]
+    conn.sendall(aes_encrypt(aes_key, f"{n_s},{e_s}"))
 
-			#Verifying the Signature of Client
-			ar=enc_dec('d',shared_key,conn.recv(1024).rstrip("\n")).split(',') #13-2
-			# print(dig_sig_gen('v',e_c,n_c,ar[0],sg=int(ar[1])))
-			if dig_sig_gen('v',e_c,n_c,ar[0],int(ar[1])):
-				if d_stat_up(d_id,1):
-					connections_credentials.update({n_id:{'d_id':d_id,'shared_key':shared_key,'n_s':n_s,'d':d,'n_c':n_c,'e_c':e_c}})
-					print (connections_credentials)
-					f=1
-					break
-	if f!=0:
-		#sepecifying node 23, 24, 25 as the base nodes. But it is to be fetched from the DB in the next update.
-		node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c) if d_id not in [23,24,25,26] else base_node(n_id,conn,d_id,shared_key,n_s,d,n_c,e_c) 
-	return
+    n_c, e_c = map(
+        int,
+        aes_decrypt(aes_key, conn.recv(1024)).split(",")
+    )
+    # RSA auth exchange - END
 
-#============
-def get_ip():
-	s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-	try:
-		# doesn't even have to be reachable
-		s.connect(('10.255.255.255', 1))
-		IP = s.getsockname()[0]
-	except:
-		IP = '127.0.0.1'
-	finally:
-		s.close()
-	return IP
+    sig_s = rsa_sign(d_s, n_s, u_asi_id)
+    conn.sendall(aes_encrypt(aes_key, f"{u_asi_id}|{sig_s}"))
 
-host=''
-port=5000
-s=socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-connections,connections_credentials = {},{}
-try:
-	s.bind((host,port))
-	print colored("SERVER STARTED\nIP => "+ get_ip(),'green')
-except socket.error as e:
-	print colored(str(e),'red')
+    c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split("|", 1)
+    print(c_msg, c_sig)
 
-s.listen(10)
-print colored("port => "+str(s.getsockname()[1])+"\nListening...\n",'green')
-#=======================
+    if client_type == "UTILITY":
+        if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+            update_utility_status(uid, 0)
+            conn.close()
+            return
+        else:
+            update_utility_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
+    if client_type == "BASE_METER":
+        if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+            update_base_meter_status(uid, 0)
+            conn.close()
+            return
+        else:
+            update_base_meter_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
+    # for name, value in locals().items():
+    #     print(f"  {name}: {value} (Type: {type(value).__name__})")
+    print("[✓] "+("Utility" if client_type == "UTILITY" else "Base Meter")+f" {uid} authenticated")
+    conn.close()
 
-n_id,b_n_ar=1,[]
-while __name__=="__main__":
-	try:
-		conn , addr = s.accept()
-		print('connected to:' +addr[0] +":"+str(addr[1]))
-		start_new_thread(client_thread,(n_id,conn))
-		connections.update({n_id:conn})
-		n_id+=1
-		print "Connections List : ",connections
-	except KeyboardInterrupt:
-		print colored("\nServer is Stopped!",'red')
-		print('Resetting device status in the DB')
-		d_id_list=[23,24,25,26,27,28,29]
-		[d_stat_up(i,0) for i in d_id_list]
-		sys.exit()
+def node_secondary_requests_validation(data):
+    c_msg, c_sig = data.split("|", 1)
+    assigned_id = c_msg.split(",")[0]
+    sig = int(c_sig)
+    n_c, e_c = None, None
+
+    # Fetch client's public key from DB
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    if assigned_id.startswith("u_"):
+        c.execute(
+            "SELECT N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?",
+            (assigned_id,)
+        )
+    elif assigned_id.startswith("b_"):
+        c.execute(
+            "SELECT N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+            (assigned_id,)
+        )
+    row = c.fetchone()
+    con.close()
+    if row:
+        n_c, e_c = row
+
+    if n_c is None or e_c is None:
+        return False
+
+    if not rsa_verify(e_c, n_c, c_msg, sig):
+        return False
+    print("[✓] Client with ASSIGNED_ID", assigned_id, "verified")
+    return True
+
+def handle_client(conn, addr):
+    try:
+        print(f"[+] Client connected from {addr}")
+        # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+        shared_int = dh_server_exchange(conn)
+        # print("Shared Integer:", shared_int)
+        aes_key = kdf_aes_key(shared_int)
+        # print("AES Key:", aes_key.hex())
+
+        if not validate_aes_channel(conn, aes_key):
+            conn.close()
+            return
+        # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+
+        data = aes_decrypt(aes_key, conn.recv(1024))
+        # Client Registration Flow
+        if not data.split("|")[-1].isdigit():
+            client_register(conn, addr, aes_key, data)
+        else:
+            # Request contains, assigned id and signature
+            if not node_secondary_requests_validation(data):
+                print("Client verification failed")
+                conn.close()
+                return
+
+            head = data.split("|", 1)[0]
+            parts = head.split(",", 2)
+            assigned_id = parts[0]
+            query_type = parts[1]
+
+            if query_type == "INIT":
+                # here the server returns a random list of available base meters (a max of 100) and utility (a max of 50) with their port and RSA public keys
+
+                # Fetch available base meters and utilities
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                c.execute("SELECT ASSIGNED_ID FROM BASE_METER_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 100", (assigned_id,))
+                base_meters = c.fetchall()
+                c.execute("SELECT ASSIGNED_ID FROM UTILITY_TABLE WHERE STAT=1 AND ASSIGNED_ID != ? ORDER BY RANDOM() LIMIT 50", (assigned_id,))
+                utilities = c.fetchall()
+                con.close()
+
+                # Prepare the response
+                response_data = []
+                for bm in base_meters:
+                    response_data.append(f"{bm[0]}")
+                for u in utilities:
+                    response_data.append(f"{u[0]}")
+
+                # Send the response by signing the data and encrypting
+                data = str(';'.join(map(str, response_data)))
+                sig_s = rsa_sign(CA_D, CA_N, data)
+                conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
+                data = aes_decrypt(aes_key, conn.recv(1024))
+                # print("Received Data:", data)
+                if not data.split("|")[-1].isdigit():
+                    client_register(conn, addr, aes_key, data)
+                else:
+                    head = data.split("|", 1)[0]
+                    selected_nodes = head.split(",")
+                    response_data = []
+                    con = sqlite3.connect(DB_FILE)
+                    c = con.cursor()
+
+                    quorum_validation_key = random_id(64)
+                    c.execute(
+                        "UPDATE BASE_METER_TABLE SET QUORUM_VALIDSTION_KEY=? WHERE ASSIGNED_ID=?",
+                        (quorum_validation_key, assigned_id)
+                    )
+                    con.commit()
+                    response_data.append(f"{quorum_validation_key}")
+
+                    # TODO: If it is the first time, mark the STAT of any previously quorum nodes as 0 for this base meter
+                    c.execute(
+                        "UPDATE QUORUM_MAP SET STAT=0 WHERE BASE_METER=?",
+                        (assigned_id,)
+                    )
+                    con.commit()
+                    for node_id in selected_nodes:
+                        if node_id.startswith("u_"):
+                            c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?", (node_id,))
+                        elif node_id.startswith("b_"):
+                            c.execute("SELECT ASSIGNED_ID, IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?", (node_id,))
+                        row = c.fetchone()
+                        if row:
+                            response_data.append(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}")
+                            c.execute(
+                                "INSERT INTO QUORUM_MAP (BASE_METER, QUORUM_NODE, STAT) VALUES (?, ?, ?)",
+                                (assigned_id, row[0], 1)
+                            )
+                            con.commit()
+                    con.close()
+                    data = str(';'.join(map(str, response_data)))
+                    sig_s = rsa_sign(CA_D, CA_N, data)
+                    conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
+
+            elif query_type == "QUORUM_VALIDATION":
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                # check if the key matches the key of the base meter with assigned_id
+                head = data.split("|", 1)[0]
+                parts = head.split(",")
+                c.execute(
+                    "SELECT * FROM QUORUM_MAP WHERE QUORUM_NODE=? AND BASE_METER=?",
+                    (assigned_id, parts[2],)
+                )
+                row1 = c.fetchone()
+                c.execute(
+                    "SELECT QUORUM_VALIDSTION_KEY FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                    (parts[2],)
+                )
+                row2 = c.fetchone()
+                if not row1 or not row2 or row2[0] != parts[3]:
+                    con.close()
+                    response_data = "ERROR,QUORUM_KEY_INVALID"
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                    conn.close()
+                    return
+                # update the QUORUM_MAP table to mark respective field as validated
+                c.execute(
+                    "UPDATE QUORUM_MAP SET VALIDATED=1 WHERE BASE_METER=? AND QUORUM_NODE=?",
+                    (parts[2], assigned_id,)
+                )
+                con.commit()
+                for i in range(10):
+                    # get list of random QUORUM_PEER_SIZE+1 quorum nodes apart from the current nodes from the QUORUM_MAP table whose VALIDATED is TRUE if not found then make a 1 sec delayed call till 5 times else break and get the ids
+                    c.execute(
+                        "SELECT QUORUM_NODE FROM QUORUM_MAP WHERE BASE_METER=? AND VALIDATED=1 AND QUORUM_NODE!=? ORDER BY RANDOM()",
+                        (parts[2], assigned_id,)
+                    )
+                    rows = c.fetchall()
+                    if len(rows) > QUORUM_PEER_SIZE*1.3:
+                        break
+                    time.sleep(1.5)
+                if len(rows) > QUORUM_PEER_SIZE*1.3:
+                    peer_nodes = [row[0] for row in rows][:QUORUM_PEER_SIZE+1]
+                    c.execute(
+                        "UPDATE QUORUM_MAP SET PROPOSED_PEERS=? WHERE BASE_METER=? AND QUORUM_NODE=?",
+                        (','.join(peer_nodes), parts[2], assigned_id,)
+                    )
+                    con.commit()
+                    response_data = "SUCCESS,"+(','.join(peer_nodes))
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+
+                    # receive the list of selected peers from the client
+                    data = aes_decrypt(aes_key, conn.recv(2048))
+                    # sign = data.split("|", 1)[-1]
+                    if not node_secondary_requests_validation(data):
+                        print("Client verification failed")
+                        conn.close()
+                        return
+                    head = data.split("|", 1)[0]
+                    selected_peers = head.split(",")[1:]  # first part is assigned_id
+                    # get the ip, port, n_c, e_c of the selected peers and send it to the client
+                    peer_info_list = []
+                    for peer_id in selected_peers:
+                        if peer_id.startswith("u_"):
+                            # query the DB to get the IP, PORT, N_C, E_C of the peer
+                            c.execute(
+                                "SELECT IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?",
+                                (peer_id,)
+                            )
+                        elif peer_id.startswith("b_"):
+                            c.execute(
+                                "SELECT IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                                (peer_id,)
+                            )
+                        row = c.fetchone()
+                        if row:
+                            peer_info_list.append(f"{peer_id},{row[0]},{row[1]},{row[2]},{row[3]}")
+                            c.execute(
+                                "INSERT INTO QUORUM_PEERS_MAP (BASE_METER, QUORUM_NODE, PEER_NODE, STAT) VALUES (?, ?, ?, ?)",
+                                (parts[2], assigned_id, peer_id, 1)
+                            )
+                            con.commit()
+                    con.close()
+                    response_data = ';'.join(peer_info_list)
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                else:
+                    response_data = "ERROR,INSUFFICIENT_VALIDATED_NODES"
+                    con.close()
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                    conn.close()
+
+            # Miscellaneous operations
+            elif query_type == "GET_PUBLIC_KEY":
+                # return the RSA public key of the base meter with assigned_id
+                con = sqlite3.connect(DB_FILE)
+                c = con.cursor()
+                head = data.split("|", 1)[0]
+                parts = head.split(",")
+                c.execute(
+                    "SELECT N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                    (parts[2],)
+                )
+                row = c.fetchone()
+                con.close()
+                if row:
+                    n_c, e_c = row
+                    response_data = f"{n_c},{e_c}"
+                else:
+                    response_data = "NOT_FOUND"
+                # print("Response Data:", response_data)
+                sig_s = rsa_sign(CA_D, CA_N, response_data)
+                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+            conn.close()
+    except Exception as e:
+        print("Error:", e)
+        response_data = "ERROR,CA_SIDE_EXCEPTION"
+        sig_s = rsa_sign(CA_D, CA_N, response_data)
+        conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+        conn.close()
+
+# ======================
+# SERVER
+# ======================
+
+def start_server():
+    if os.path.exists(DB_FILE):
+        os.remove(DB_FILE)
+        print("Old DB removed")
+    else:
+        print("DB file not found, proceeding.")
+    print("Initializing DB...")
+    init_db()
+    s = socket.socket()
+    s.bind((HOST, PORT))
+    s.listen()
+    print("Certifying Authority STARTED at", s.getsockname())
+    global CA_N, CA_E, CA_D
+    CA_N, CA_E, CA_D = rsa_generate()
+    while True:
+        try:
+            conn, addr = s.accept()
+            threading.Thread(
+                target=handle_client,
+                args=(conn, addr),
+                daemon=True
+            ).start()
+        except KeyboardInterrupt:
+            print("\nCertifying Authority STOPPED")
+            # os.remove(DB_FILE)
+            sys.exit()
+
+if __name__ == "__main__":
+    start_server()
