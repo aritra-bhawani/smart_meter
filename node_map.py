@@ -6,7 +6,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 import sqlite3 as sqlite
 
-NUMBER_OF_QUERIED_NODES = 2
+NUMBER_OF_QUERIED_NODES = 1
 
 DB_PATH = "certifying_authority_DB.db"
 G = nx.Graph()

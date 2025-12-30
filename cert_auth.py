@@ -99,6 +99,14 @@ def init_db():
             STAT BOOLEAN DEFAULT FALSE
             )""")
 
+    if "QUORUM_PEERS_MAP" not in r:
+        c.execute("""CREATE TABLE QUORUM_PEERS_MAP (
+            BASE_METER TEXT,
+            QUORUM_NODE TEXT,
+            PEER_NODE TEXT,
+            STAT BOOLEAN DEFAULT FALSE
+            )""")
+
     con.commit()
     con.close()
 
@@ -295,7 +303,7 @@ def node_secondary_requests_validation(data):
 def handle_client(conn, addr):
     try:
         print(f"[+] Client connected from {addr}")
-		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
+        # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
         shared_int = dh_server_exchange(conn)
         # print("Shared Integer:", shared_int)
         aes_key = kdf_aes_key(shared_int)
@@ -304,7 +312,7 @@ def handle_client(conn, addr):
         if not validate_aes_channel(conn, aes_key):
             conn.close()
             return
-		# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
+        # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
         data = aes_decrypt(aes_key, conn.recv(1024))
         # Client Registration Flow
@@ -435,12 +443,50 @@ def handle_client(conn, addr):
                     )
                     con.commit()
                     response_data = "SUCCESS,"+(','.join(peer_nodes))
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+
+                    # receive the list of selected peers from the client
+                    data = aes_decrypt(aes_key, conn.recv(2048))
+                    # sign = data.split("|", 1)[-1]
+                    if not node_secondary_requests_validation(data):
+                        print("Client verification failed")
+                        conn.close()
+                        return
+                    head = data.split("|", 1)[0]
+                    selected_peers = head.split(",")[1:]  # first part is assigned_id
+                    # get the ip, port, n_c, e_c of the selected peers and send it to the client
+                    peer_info_list = []
+                    for peer_id in selected_peers:
+                        if peer_id.startswith("u_"):
+                            # query the DB to get the IP, PORT, N_C, E_C of the peer
+                            c.execute(
+                                "SELECT IP, PORT, N_C, E_C FROM UTILITY_TABLE WHERE ASSIGNED_ID=?",
+                                (peer_id,)
+                            )
+                        elif peer_id.startswith("b_"):
+                            c.execute(
+                                "SELECT IP, PORT, N_C, E_C FROM BASE_METER_TABLE WHERE ASSIGNED_ID=?",
+                                (peer_id,)
+                            )
+                        row = c.fetchone()
+                        if row:
+                            peer_info_list.append(f"{peer_id},{row[0]},{row[1]},{row[2]},{row[3]}")
+                            c.execute(
+                                "INSERT INTO QUORUM_PEERS_MAP (BASE_METER, QUORUM_NODE, PEER_NODE, STAT) VALUES (?, ?, ?, ?)",
+                                (parts[2], assigned_id, peer_id, 1)
+                            )
+                            con.commit()
+                    con.close()
+                    response_data = ';'.join(peer_info_list)
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
                 else:
                     response_data = "ERROR,INSUFFICIENT_VALIDATED_NODES"
-                con.close()
-                sig_s = rsa_sign(CA_D, CA_N, response_data)
-                conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
-                conn.close()
+                    con.close()
+                    sig_s = rsa_sign(CA_D, CA_N, response_data)
+                    conn.sendall(aes_encrypt(aes_key, f"{response_data}|{sig_s}"))
+                    conn.close()
 
             # Miscellaneous operations
             elif query_type == "GET_PUBLIC_KEY":
