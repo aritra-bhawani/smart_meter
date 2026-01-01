@@ -35,11 +35,17 @@ BASE_METER_ID = random.randint(1, 1000)
 
 TRY_CYCLE_LIMIT = 3
 
-global PEER_NODE_CONNECTIONS
-PEER_NODE_CONNECTIONS = dict()
+global QUORUM_SLICE
+QUORUM_SLICE = dict()
 
 global SERVING_QUORUM_CONNECTIONS
 SERVING_QUORUM_CONNECTIONS = dict()
+
+global PEER_NODE_CONNECTIONS
+PEER_NODE_CONNECTIONS = dict()
+
+global SERVING_PEER_NODE_CONNECTIONS
+SERVING_PEER_NODE_CONNECTIONS = dict()
 
 # Quorum Size
 METER_COUNT = 10
@@ -140,6 +146,7 @@ def proceed_init():
 	utility = random.sample(utility, min(UTILITY_COUNT, len(utility)))
 	base_meters = random.sample(base_meters, min(METER_COUNT, len(base_meters)))
 	selected = base_meters + utility
+	random.shuffle(selected)
 
 	selected_str = ','.join(map(str, selected))
 	sock.sendall(
@@ -156,8 +163,8 @@ def proceed_init():
 	QUORUM_VERIFICATION_KEY, nodes = ca_msg.split(";")[0], ca_msg.split(";")[1:]
 	sock.close()
 
-	global QUORUM_SLICE
-	QUORUM_SLICE = dict()
+	# global QUORUM_SLICE
+	# QUORUM_SLICE = dict()
 	for node in nodes:
 		parts = node.split(",")
 		if len(parts) < 5:
@@ -167,6 +174,72 @@ def proceed_init():
 		QUORUM_SLICE[node_id] = {'ip': node_ip, 'port': int(node_port), 'n_c': int(node_n_c), 'e_c': int(node_e_c)}
 	# the meter will now cooncect to the nodes wiht the ip and port provided
 	connect_to_quorum_node(QUORUM_VERIFICATION_KEY, QUORUM_SLICE)
+
+def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info):
+	try_count = 0
+	while try_count < TRY_CYCLE_LIMIT:
+		try_count += 1
+		node_ip = node_info['ip']
+		node_port = node_info['port']
+		soc = socket.create_connection((node_ip, int(node_port)), timeout=10)
+		# establish secure AES channel
+		conn_status, aes_key = initial_channel_setup(soc)
+		if not conn_status:
+			soc.close()
+			continue
+
+		msg = f"{ASSIGNED_ID},SELECTED_PEER,{c_assigned_id},{quorum_key}"
+		soc.sendall(
+			aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+		)
+
+		soc.settimeout(60)
+		data = aes_decrypt(aes_key, soc.recv(1024))
+		print(f"Response from Quorum Peer Node {node_id}: {data}")
+		if data == "SUCCESS":
+			PEER_NODE_CONNECTIONS[c_assigned_id][node_id]['validated'] = True
+			break
+		soc.close()
+		time.sleep(random.uniform(2, 10))
+
+def connect_to_quorum_peer(c_assigned_id, quorum_key, peer_connections):
+	for node_id, node_info in peer_connections.items():
+		connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info)
+		# threading.Thread(
+		# 	target=connect_to_quorum_peer_thread,
+		# 	args=(c_assigned_id, quorum_key, node_id, node_info),
+		# 	daemon=True
+		# ).start()
+		time.sleep(random.uniform(0.5, 5))
+
+	# print("--------",c_assigned_id, quorum_key, peer_connections)
+	# threads = []
+	# for node_id, node_info in peer_connections.items():
+	# 	t = threading.Thread(
+	# 		target=connect_to_quorum_peer_thread,
+	# 		args=(c_assigned_id, quorum_key, node_id, node_info),
+	# 		daemon=True
+	# 	)
+	# 	t.start()
+	# 	threads.append(t)
+	# 	time.sleep(random.uniform(0.5, 1))
+
+	# # Wait for all peer-connection threads to finish (with a sensible timeout per thread)
+	# for t in threads:
+	# 	try:
+	# 		t.join(timeout=10)
+	# 	except RuntimeError:
+	# 		# If join fails for any reason, continue to the next thread
+	# 		continue
+
+	# # Check validation status of peer connections for this client (if available)
+	# all_validated = False
+	# if c_assigned_id in PEER_NODE_CONNECTIONS:
+	# 	all_validated = all(
+	# 		info.get('validated', False) for info in PEER_NODE_CONNECTIONS.get(c_assigned_id, {}).values()
+	# 	)
+	# print(f"Finished peer validation for {c_assigned_id}. All validated: {all_validated}")
+
 
 def connect_to_ca():
 	sock = socket.socket()
@@ -269,6 +342,9 @@ def handle_client(conn, addr):
 		ca_msg, ca_sig = data.split("|", 1)
 		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
 			print("CA signature verification failed")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 			sock.close()
 			conn.close()
 			return
@@ -277,7 +353,10 @@ def handle_client(conn, addr):
 		# Connecting to CA to get the public key of the client node ============== END
 		# Verfyfy client signature
 		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
-			print("CA signature verification failed")
+			print("Quorum Client signature verification failed")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 			sock.close()
 			conn.close()
 			return
@@ -335,7 +414,7 @@ def handle_client(conn, addr):
 			conn.close()
 			return
 
-		print(peer_nodes)
+		# print(peer_nodes)
 		PEER_NODE_CONNECTIONS[c_assigned_id] = dict()
 		for pn in peer_nodes:
 			parts = pn.split(",")
@@ -347,13 +426,93 @@ def handle_client(conn, addr):
 				'e_c': int(node_e_c),
 				'validated': False
 			}
-		print(f"Peer nodes for {c_assigned_id}: {PEER_NODE_CONNECTIONS[c_assigned_id]}")
+		# print(f"Peer nodes for {c_assigned_id}: {PEER_NODE_CONNECTIONS[c_assigned_id]}")
+
+		# now make a connection to each peer node in a separate thread to send the quorum key for validation
+		connect_to_quorum_peer(c_assigned_id,quorum_key, PEER_NODE_CONNECTIONS[c_assigned_id])
 
 		sock.close()
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+	elif command == "SELECTED_PEER":
+		peer_node_assigned_id = client_msg.split(",")[0]
+		c_assigned_id = client_msg.split(",")[2]
+		quorum_key = client_msg.split(",")[3]
+		# Connecting to CA to get the public key of the client node ============== START
+		sock = socket.socket()
+		sock.connect((CA_IP, CA_PORT))
+		conn_status, aes_key = initial_channel_setup(sock)
+		if not conn_status:
+			sock.close()
+			conn.close()
+			return
 
+		msg = f"{ASSIGNED_ID},GET_PUBLIC_KEY,{peer_node_assigned_id}"
+		sock.sendall(
+			aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+		)
+		data = aes_decrypt(aes_key, sock.recv(2048))
+
+		ca_msg, ca_sig = data.split("|", 1)
+		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+			print("CA signature verification failed")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			sock.close()
+			conn.close()
+			return
+		print("CA returned public key for peer node:", ca_msg)
+		client_n, client_e = map(int, ca_msg.split(",", 1))
+		sock.close()
+		# Connecting to CA to get the public key of the client node ============== END
+		# Verfyfy client signature
+		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+			print("Peer Node signature verification failed")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			sock.close()
+			conn.close()
+			return
+		# SERVING_PEER_NODE_CONNECTIONS[c_assigned_id][peer_node_assigned_id]= {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key}
+		SERVING_PEER_NODE_CONNECTIONS.setdefault(c_assigned_id, {})[peer_node_assigned_id] = {
+			'ip': addr[0],
+			'port': addr[1],
+			'n_c': client_n,
+			'e_c': client_e,
+			'quorum_key': quorum_key
+		}
+
+		# print("Serving Peer Node Connections:", SERVING_PEER_NODE_CONNECTIONS)
+		try_count = 0
+		validation_success = False
+		while try_count < TRY_CYCLE_LIMIT and validation_success is False:
+			try_count += 1
+			sock = socket.socket()
+			sock.connect((CA_IP, CA_PORT))
+			sock_status, aes_key = initial_channel_setup(sock)
+			if not sock_status:
+				print("Failed to establish secure channel with CA for peer quorum validation")
+				sock.close()
+				break
+			# Send quorum key for validation and get peer nodes list in response or error message
+			msg = f"{ASSIGNED_ID},QUORUM_PEER_VALIDATION,{c_assigned_id},{peer_node_assigned_id},{quorum_key}"
+			sock.sendall(
+				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+			)
+			data = aes_decrypt(aes_key, sock.recv(2048))
+			ca_msg, ca_sig = data.split("|", 1)
+			print("Peer quorum validation status:", ca_msg)
+			if ca_msg == "SUCCESS":
+				validation_success = True
+				sock.close()
+				break
+			time.sleep(random.uniform(1,5))
+		response_data = "SUCCESS" if validation_success else "ERROR"
+		sig_s = rsa_sign(CL_D, CL_N, response_data)
+		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 	conn.close()
 
 	# except Exception as e:
