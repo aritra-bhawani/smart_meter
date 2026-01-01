@@ -21,6 +21,7 @@ services:
       - ca
 
   base_meter:
+    platform: linux/arm64
     build: .
     environment:
       - ROLE=base_meter
@@ -29,6 +30,8 @@ services:
       - BASE_METER_PASS=12345
     depends_on:
       - ca
+    cpus: "0.25"
+    mem_limit: 512m
 
 volumes:
   ca_db:
