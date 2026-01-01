@@ -307,7 +307,7 @@ def handle_client(conn, addr):
     shared_int = dh_server_exchange(conn)
     # print("Shared Integer:", shared_int)
     aes_key = kdf_aes_key(shared_int)
-    print("AES Key:", aes_key.hex())
+    # print("AES Key:", aes_key.hex())
 
     if not validate_aes_channel(conn, aes_key):
         conn.close()
