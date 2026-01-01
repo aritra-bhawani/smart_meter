@@ -4,6 +4,7 @@ import base64
 import json
 import math
 from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
 import string
 
 # Load primes
@@ -43,22 +44,21 @@ def dh_client(sock):
 
 
 def aes_encrypt(key: bytes, msg: str) -> bytes:
-    cipher = AES.new(key, AES.MODE_ECB)
-    pad = 16 - (len(msg) % 16)
-    msg_padded = msg + chr(pad) * pad
-    return base64.b64encode(cipher.encrypt(msg_padded.encode()))
+    # AES-GCM AEAD: use a 12-byte nonce, include tag for authentication
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ct, tag = cipher.encrypt_and_digest(msg.encode())
+    return base64.b64encode(nonce + tag + ct)
 
 
 def aes_decrypt(key: bytes, data: bytes) -> str:
-    cipher = AES.new(key, AES.MODE_ECB)
-    raw = cipher.decrypt(base64.b64decode(data))
-    return raw[:-raw[-1]].decode()
-    # unpadded = raw[:-raw[-1]]
-    # try:
-    #     return unpadded.decode()
-    # except UnicodeDecodeError:
-    #     # provide a clearer error for callers including raw hex (safe for debugging)
-    #     raise ValueError(f"Decryption produced non-text bytes (hex): {unpadded.hex()}")
+    raw = base64.b64decode(data)
+    nonce = raw[:12]
+    tag = raw[12:28]
+    ct = raw[28:]
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    return cipher.decrypt_and_verify(ct, tag).decode()
+    # If decrypt_and_verify raises ValueError, authentication failed.
 
 
 def validate_aes_channel(conn, aes_key: bytes) -> bool:
