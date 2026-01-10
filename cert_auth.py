@@ -23,7 +23,7 @@ DB_FILE = "certifying_authority_DB.db"
 HOST = ""
 PORT = 5005
 
-QUORUM_PEER_SIZE = 6
+QUORUM_PEER_SIZE = 5
 
 # ======================
 # DB INIT
