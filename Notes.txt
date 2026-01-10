@@ -26,3 +26,14 @@ https://www.kaggle.com/datasets/jeanmidev/smart-meters-in-london?resource=downlo
 
 
 
+docker run -d \
+  --name base_meter_extra_4 \
+  --network smart_meter_default \
+  --platform linux/arm64 \
+  --cpus="0.25" \
+  --memory="512m" \
+  -e ROLE=base_meter \
+  -e CA_HOST=ca \
+  -e CA_PORT=5005 \
+  -e BASE_METER_PASS=12345 \
+  smart_meter-base_meter:latest
