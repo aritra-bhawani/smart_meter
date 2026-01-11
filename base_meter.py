@@ -554,6 +554,7 @@ def handle_client(conn, addr):
 		response_data = "SUCCESS" if validation_success else "ERROR"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+		# print(f"[{ASSIGNED_ID}] Current Serving Peer Node Connections: {SERVING_PEER_NODE_CONNECTIONS}")
 	conn.close()
 
 	# except Exception as e:
