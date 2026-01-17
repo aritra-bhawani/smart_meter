@@ -1,1 +1,13 @@
 .DS_Store
+
+.trunk/
+.idea/
+.vscode/
+
+__pycache__/
+*.pyc
+
+*.log
+*.env
+
+primes50.txt
