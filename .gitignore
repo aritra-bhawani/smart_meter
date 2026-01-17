@@ -10,4 +10,4 @@ __pycache__/
 *.log
 *.env
 
-primes50.txt
+*.txt
