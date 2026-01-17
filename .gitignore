@@ -9,6 +9,7 @@ __pycache__/
 
 *.log
 *.env
+*.db
 
 primes50.txt
 Notes.txt
