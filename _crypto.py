@@ -6,9 +6,10 @@ import math
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 import string
+import os
 
-# Load primes
-with open("prime.json", "r") as f:
+prime_path = os.path.join(os.path.dirname(__file__), "prime.json")
+with open(prime_path, "r") as f:
     PRIMES = json.load(f)
 PRIMES_SMALL = PRIMES["small"]
 PRIMES_BIG = PRIMES["big"]
@@ -18,7 +19,7 @@ def kdf_aes_key(shared_int: int) -> bytes:
     return hashlib.sha256(str(shared_int).encode()).digest()[:16]
 
 
-def dh_server_exchange(conn):
+def dh_server_exchange(conn) -> int:
     prime = random.choice(PRIMES_BIG)
     base = random.randint(10**8, 10**9)
     secret = random.randint(5, 20)
@@ -31,7 +32,7 @@ def dh_server_exchange(conn):
     return pow(A, secret, prime)
 
 
-def dh_client(sock):
+def dh_client(sock) -> int:
     data = sock.recv(1024).decode()
     prime, base = map(int, data.split(",", 1))
     secret = random.randint(5, 20)
@@ -69,7 +70,7 @@ def validate_aes_channel(conn, aes_key: bytes) -> bool:
     return a == b[::-1]
 
 
-def rsa_generate():
+def rsa_generate() -> tuple:
     p, q = random.sample(PRIMES_SMALL, 2)
     n = p * q
     phi = (p - 1) * (q - 1)
@@ -78,16 +79,20 @@ def rsa_generate():
         e = random.randint(3, phi - 1)
         if math.gcd(e, phi) == 1:
             break
-
     d = pow(e, -1, phi)
     return n, e, d
 
 
-def rsa_sign(d, n, msg):
+def rsa_sign(d, n, msg) -> int:
     h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
     return pow(h, d, n)
 
 
-def rsa_verify(e, n, msg, sig):
+def rsa_verify(e, n, msg, sig) -> bool:
     h = int(hashlib.sha256(msg.encode()).hexdigest(), 16) % 1000
     return h == pow(sig, e, n)
+
+def data_enc(payload) -> str:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    # print(data)
+    return hashlib.sha256(data.encode()).hexdigest()

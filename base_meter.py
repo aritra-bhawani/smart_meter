@@ -13,7 +13,10 @@ from _crypto import (
 	rsa_generate,
 	rsa_sign,
 	rsa_verify,
+	data_enc
 )
+from _probe import *
+
 # For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
 CA_PORT = int(os.getenv("CA_PORT", "5005"))
@@ -145,8 +148,34 @@ def connect_to_quorum_node(quorum_key, quorum_slice):
 	)
 	print(f"[{ASSIGNED_ID}] Finished connecting to quorum nodes. All validated: {all_validated}")
 
+def quorum_consensus_init():
+	hw = start_meter(base_rate=0.002, variability=0.0001)
+	block_height = 0
+	while True:
+		time.sleep(60)
+		METER_READING_DATA = read_meter(hw)
+		print(f"[{ASSIGNED_ID}] Meter Reading: {METER_READING_DATA}")
+		for i in QUORUM_SLICE:
+			if QUORUM_SLICE[i]['validated'] is True:
+				print(f"[{ASSIGNED_ID}] Sending reading to Quorum Node {i}")
+				try:
+					soc = socket.create_connection((QUORUM_SLICE[i]['ip'], int(QUORUM_SLICE[i]['port'])), timeout=10)
+					conn_status, aes_key = initial_channel_setup(soc)
+					if not conn_status:
+						soc.close()
+						continue
 
-
+					msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']}, {data_enc(METER_READING_DATA)}"
+					soc.sendall(
+						aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
+					)
+					soc.settimeout(60)
+					data = aes_decrypt(aes_key, soc.recv(1024))
+					print(f"[{ASSIGNED_ID}] Response from Quorum Node {i} for reading submission: {data}")
+				except Exception as e:
+					print(f"[{ASSIGNED_ID}] Error sending reading to Quorum Node {i}: {e}")
+					continue
+		block_height += 1
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
 	time.sleep(random.randint(10,20))  # simulate delay
@@ -210,6 +239,9 @@ def proceed_init():
 	# the meter will now cooncect to the nodes wiht the ip and port provided
 	connect_to_quorum_node(QUORUM_VERIFICATION_KEY, QUORUM_SLICE)
 	print(f"[{ASSIGNED_ID}] INIT process completed. With quorum statuses: {QUORUM_SLICE}")
+	# TODO: vlidate the quorum status from the CA
+
+	quorum_consensus_init()
 
 def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info):
 	try_count = 0
@@ -401,7 +433,7 @@ def handle_client(conn, addr):
 			sock.close()
 			conn.close()
 			return
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key}
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key, 'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None}
 		# Connecting to CA to validate the quorum key and get the quorum of this node ============ START
 		try_count = 0
 		peer_nodes = None
@@ -555,6 +587,31 @@ def handle_client(conn, addr):
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 		# print(f"[{ASSIGNED_ID}] Current Serving Peer Node Connections: {SERVING_PEER_NODE_CONNECTIONS}")
+
+	elif command == "METER_REQ":
+		block_height = client_msg.split(",")[2]
+		reading_timestamp = client_msg.split(",")[3]
+		reading_value = client_msg.split(",")[4]
+		reading_value_enc = client_msg.split(",")[5]
+		# Verify client signature
+		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
+		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
+		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+			print(f"[{ASSIGNED_ID}] Meter Node signature verification failed for reading submission")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+		# validate and store the meter reading
+		time.sleep(2) # absorption delay
+		print(f"[{ASSIGNED_ID}] node list for {c_assigned_id}: {PEER_NODE_CONNECTIONS[c_assigned_id]}")
+
+		print(f"[{ASSIGNED_ID}] Received meter reading from {c_assigned_id}: Height={block_height}, Timestamp={reading_timestamp}, Value={reading_value}")
+		response_data = "SUCCESS"
+		sig_s = rsa_sign(CL_D, CL_N, response_data)
+		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+
 	conn.close()
 
 	# except Exception as e:

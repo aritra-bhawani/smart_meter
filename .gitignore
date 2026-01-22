@@ -10,6 +10,7 @@ __pycache__/
 *.log
 *.env
 *.db
+*.png
 
 primes50.txt
 Notes.txt

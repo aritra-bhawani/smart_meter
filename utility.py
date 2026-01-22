@@ -3,6 +3,7 @@ import socket
 import random
 import time
 import threading
+import sqlite3
 from _crypto import (
 	kdf_aes_key,
 	dh_server_exchange,
@@ -45,6 +46,31 @@ global SERVING_PEER_NODE_CONNECTIONS
 SERVING_PEER_NODE_CONNECTIONS = dict()
 
 QUORUM_PEER_SIZE = 5
+
+def init_db():
+    DB_FILE = f"Utility_{ASSIGNED_ID}_DB.db"
+    con = sqlite3.connect(DB_FILE)
+    c = con.cursor()
+    c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    r = [i[0] for i in c.fetchall()]
+
+    if "ledger" not in r:
+        c.execute("""CREATE TABLE ledger (
+            meter_id           TEXT NOT NULL,
+			meter_reading      REAL,
+			reading_timestamp  INTEGER,
+            block_height        INTEGER NOT NULL,
+            block_hash          BLOB NOT NULL,
+            prev_block_hash     BLOB NOT NULL,
+            timestamp           INTEGER NOT NULL,
+            quorum_slice_id     TEXT NOT NULL,
+            slab_roots          BLOB NOT NULL,
+            quorum_signatures   BLOB NOT NULL,
+			consensus_status    BOOL NOT NULL,
+            PRIMARY KEY (ledger_id, block_height)
+        );""")
+    con.commit()
+    con.close()
 
 # ======================
 # CLIENT FLOW
@@ -191,6 +217,9 @@ def connect_to_ca():
 	# 	print(f"  {name}: {value} (Type: {type(value).__name__})")
 	sock.close()
 
+	print(f"[{ASSIGNED_ID}] Utility setup complete. Database initializing...")
+	init_db()
+
 # ======================
 # SERVER FLOW
 # ======================
@@ -250,7 +279,7 @@ def handle_client(conn, addr):
 			sock.close()
 			conn.close()
 			return
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key}
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key,  'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None}
 		# Connecting to CA to validate the quorum key and get the quorum of this node ============ START
 		try_count = 0
 		peer_nodes = None
@@ -324,6 +353,7 @@ def handle_client(conn, addr):
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+
 	elif command == "SELECTED_PEER":
 		peer_node_assigned_id = client_msg.split(",")[0]
 		c_assigned_id = client_msg.split(",")[2]
@@ -402,6 +432,27 @@ def handle_client(conn, addr):
 		response_data = "SUCCESS" if validation_success else "ERROR"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+
+	elif command == "METER_REQ":
+		block_height = client_msg.split(",")[2]
+		reading_timestamp = client_msg.split(",")[3]
+		reading_value = client_msg.split(",")[4]
+		# # Verify client signature
+		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
+		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
+		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+			print(f"[{ASSIGNED_ID}] Meter Node signature verification failed for reading submission")
+			response_data = "ERROR"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+
+		print(f"[{ASSIGNED_ID}] Received meter reading from {c_assigned_id}: Height={block_height}, Timestamp={reading_timestamp}, Value={reading_value}")
+		response_data = "SUCCESS"
+		sig_s = rsa_sign(CL_D, CL_N, response_data)
+		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))	
+
 	conn.close()
 
 	# except Exception as e:
