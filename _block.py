@@ -6,6 +6,7 @@ import json
 from datetime import datetime
 import copy
 import math
+import sys
 
 # 
 from _crypto import (
@@ -25,8 +26,12 @@ import matplotlib.pyplot as plt
 # 
 
 # defines the state of the node's blockchain at a given point in time
-_10m_slab_span = 1 # test purpose, set to 20 seconds
-hour_slab_span = 6 #test purpose, set to 1 minute
+_10m_slab_span = 0.001 # with respect to the time span
+hour_slab_span = 6 # with respect to the 10 mins slab
+day_slab_span = 24 # with respect to the hr slab
+# week_slab_span = 7 # with respect to the day slab
+month_slab_span = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31] # with respect to the day slab
+year_slab_span = 12 # with respect to the month slab
 
 @dataclass
 class NodeBlock:
@@ -127,14 +132,10 @@ def block_to_dict(block, seen=None):
     return d
 
 def plot_optimization_comparison(data):
-    """
-    Plots 'size' vs 'time' for both optimized and non-optimized data.
-    Handles cases where one or both datasets are empty or missing.
-    """
+    # print(data)
     with_opt = data.get('with_optimization', {})
     without_opt = data.get('without_optimization', {})
 
-    # Check if there is any data to plot at all
     has_with = with_opt.get('size') and with_opt.get('time')
     has_without = without_opt.get('size') and without_opt.get('time')
 
@@ -142,44 +143,61 @@ def plot_optimization_comparison(data):
         print("No data available to plot.")
         return
 
-    # Find the global minimum time to normalize the X-axis to 0
+    # Normalize time axis
     all_times = []
-    if has_with: all_times.extend(with_opt['time'])
-    if has_without: all_times.extend(without_opt['time'])
-    
+    if has_with:
+        all_times.extend(with_opt['time'])
+    if has_without:
+        all_times.extend(without_opt['time'])
+
     base_time = min(all_times)
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(9, 5))
 
-    # Plot 'With Optimization' if data exists
+    # With optimization (thinner)
     if has_with:
         time_w = [t - base_time for t in with_opt['time']]
-        plt.plot(time_w, with_opt['size'], label='With Optimization', 
-                 marker='o', linestyle='-', color='blue', linewidth=2)
+        plt.plot(
+            time_w,
+            with_opt['size'],
+            label='With Optimization',
+            color='blue',
+            linewidth=1.2,
+            marker='o',
+            markersize=2,
+            alpha=0.9
+        )
 
-    # Plot 'Without Optimization' if data exists
+    # Without optimization (thinner)
     if has_without:
         time_wo = [t - base_time for t in without_opt['time']]
-        plt.plot(time_wo, without_opt['size'], label='Without Optimization', 
-                 marker='s', linestyle='--', color='red', linewidth=2)
+        plt.plot(
+            time_wo,
+            without_opt['size'],
+            label='Without Optimization',
+            color='red',
+            linestyle='--',
+            linewidth=1.2,
+            marker='s',
+            markersize=2,
+            alpha=0.9
+        )
 
-    # Graph Formatting
-    plt.xlabel('Time (Relative Seconds)', fontsize=12)
-    plt.ylabel('Size', fontsize=12)
-    plt.title('Performance Comparison: Optimization Analysis', fontsize=14)
-    
-    # Only show legend if we have at least one valid dataset
-    plt.legend()
-    plt.grid(True, linestyle=':', alpha=0.6)
+    # Formatting
+    plt.xlabel('Time (Relative 10 mins)', fontsize=11)
+    plt.ylabel('Size in Bytes', fontsize=11)
+    plt.title('Performance Comparison: Optimization Analysis', fontsize=13)
+
+    plt.legend(frameon=False)
+    plt.grid(True, linestyle=':', linewidth=0.6, alpha=0.5)
     plt.tight_layout()
 
-    # Save/Show
-    plt.savefig('optimization_plot.png')
+    plt.savefig('optimization_plot.png', dpi=300)
     print("Plot generated successfully.")
 # Misc --- END
 
 comparison_matrix = {"with_optimization": {"size":[], "time":[]}, "without_optimization": {"size":[], "time":[]}}
-while block_height<=200:
+while block_height<=200 and False:
     METER_READING_DATA = read_meter(hw)
     # if prev_block is not None:
     #     slab_roots['10m'].append(prev_block)
@@ -239,8 +257,182 @@ while block_height<=200:
     block_height += 1
     time.sleep(_10m_slab_span)
 
+# plot_optimization_comparison(comparison_matrix)
+
+# RAM usage
+def get_deep_size(obj, seen=None):
+    size = sys.getsizeof(obj)
+    if seen is None: seen = set()
+    obj_id = id(obj)
+    if obj_id in seen: return 0
+    seen.add(obj_id)
+
+    if isinstance(obj, dict):
+        size += sum([get_deep_size(v, seen) + get_deep_size(k, seen) for k, v in obj.items()])
+    elif hasattr(obj, '__iter__') and not isinstance(obj, (str, bytes, bytearray)):
+        size += sum([get_deep_size(i, seen) for i in obj])
+    return size
+
+basic_ledger = {
+    "ledger_id": None,
+    "quorum_slice_id": None,
+    "block_height": 0,
+    "last_timestamp": 0,
+    "consumption_value_hash": None,
+    "current_10m_hash_value": None,
+    "slab_roots": {
+        "10mi":[]
+    },
+    "temp_readings":{}
+}
+
+opt_ledger = {
+    "ledger_id": None,
+    "quorum_slice_id": None,
+    "block_height": 0,
+    "last_timestamp": 0,
+    "consumption_value_hash": None,
+    "current_10m_hash_value": None,
+    "current_1h_hash_value": None,
+    "slab_roots": {
+        "10mi":[],
+        "1h":[],
+        "1d":[],
+        "1m":[],
+        "1y":[]
+    },
+    "temp_readings":{}
+}
+
+local_ledger = copy.deepcopy(basic_ledger)
+local_ledger["ledger_id"]="b_62DKxsTsk7cwGLmO"
+local_ledger["quorum_slice_id"]="b_62DKxsTsk7cwGLmO"
+prev_10m_block_hash_="0"*64
+block_height_ = 0
+
+
+local_opt_ledger = copy.deepcopy(opt_ledger)
+local_opt_ledger["ledger_id"]="b_62DKxsTsk7cwGLmO"
+local_opt_ledger["quorum_slice_id"]="b_62DKxsTsk7cwGLmO"
+prev_10m_block_hash, prev_1h_block_hash, prev_1d_block_hash, prev_1m_block_hash, prev_1y_block_hash = ["0"*64,"0"*64,"0"*64,"0"*64,"0"*64]
+block_height = 0
+
+month_counter = 0
+while block_height<10000:
+    METER_READING_DATA = read_meter(hw)
+    read_time = (datetime.fromisoformat(METER_READING_DATA['timestamp']).timestamp())
+
+    # Operation for basic ledger - START
+    block_content={
+        "ledger_id": local_ledger["ledger_id"],
+        "quorum_slice_id": local_ledger["quorum_slice_id"],
+        "block_height": block_height_,
+        "timestamp": read_time,
+        "consumption_value_hash": data_enc(METER_READING_DATA['value']),
+        "prev_10m_block_hash": prev_10m_block_hash_
+    }
+    prev_10m_block_hash_ = data_enc(block_content)
+    local_ledger["slab_roots"]["10mi"].append(block_content)
+    # updating the principle values
+    block_height_+=1
+    local_ledger["block_height"]=block_height_
+    local_ledger["last_timestamp"]=read_time
+    local_ledger["consumption_value_hash"]=data_enc(METER_READING_DATA['value'])
+    local_ledger["current_10m_hash_value"]=prev_10m_block_hash_
+
+    # comparison_matrix["without_optimization"]["size"].append(get_deep_size(local_ledger)) # in bytes
+    # comparison_matrix["without_optimization"]["time"].append(read_time*(10/_10m_slab_span))
+
+    # Operation for basic ledger - END
+
+    # Operation for optimized ledger - START
+    block_content={
+        "ledger_id": local_opt_ledger["ledger_id"],
+        "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
+        "block_height": block_height,
+        "timestamp": read_time,
+        "consumption_value_hash": data_enc(METER_READING_DATA['value']), #cumulated consumption balue of the energy
+        "prev_10m_block_hash": prev_10m_block_hash
+    }
+    prev_10m_block_hash = data_enc(block_content)
+    local_opt_ledger["slab_roots"]["10mi"].append(block_content)
+    # updating the principle values
+    block_height+=1
+    local_opt_ledger["block_height"]=block_height
+    local_opt_ledger["last_timestamp"]=read_time
+    local_opt_ledger["consumption_value_hash"]=data_enc(METER_READING_DATA['value'])
+    local_opt_ledger["current_10m_hash_value"]=prev_10m_block_hash
+
+    # compute the hour ledger
+    if len(local_opt_ledger["slab_roots"]["10mi"]) > 2 and local_opt_ledger["slab_roots"]["10mi"][-1]["timestamp"] - local_opt_ledger["slab_roots"]["10mi"][0]["timestamp"] >= _10m_slab_span*hour_slab_span:
+        block_content={
+            "ledger_id": local_opt_ledger["ledger_id"],
+            "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
+            "block_height": block_height,
+            "timestamp": read_time,
+            "consumption_value_hash": data_enc(METER_READING_DATA['value']),
+            "prev_1h_block_hash": prev_1h_block_hash
+        }
+        prev_1h_block_hash = data_enc(block_content)
+        local_opt_ledger["slab_roots"]["1h"].append(block_content)
+        local_opt_ledger["current_1h_hash_value"]=prev_1h_block_hash
+        local_opt_ledger["slab_roots"]["10mi"] = [local_opt_ledger["slab_roots"]["10mi"][-1]]
+
+    if len(local_opt_ledger["slab_roots"]["1h"]) >= day_slab_span:
+        block_content={
+            "ledger_id": local_opt_ledger["ledger_id"],
+            "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
+            "block_height": block_height,
+            "timestamp": read_time,
+            "consumption_value_hash": data_enc(METER_READING_DATA['value']),
+            "prev_1d_block_hash": prev_1d_block_hash
+        }
+        prev_1d_block_hash = data_enc(block_content)
+        local_opt_ledger["slab_roots"]["1d"].append(block_content)
+        local_opt_ledger["current_1d_hash_value"]=prev_1d_block_hash
+        local_opt_ledger["slab_roots"]["1h"] = [local_opt_ledger["slab_roots"]["1h"][-1]]
+
+    if len(local_opt_ledger["slab_roots"]["1d"]) >= month_slab_span[month_counter%12]:
+        block_content={
+            "ledger_id": local_opt_ledger["ledger_id"],
+            "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
+            "block_height": block_height,
+            "timestamp": read_time,
+            "consumption_value_hash": data_enc(METER_READING_DATA['value']),
+            "prev_1m_block_hash": prev_1m_block_hash
+        }
+        prev_1m_block_hash = data_enc(block_content)
+        local_opt_ledger["slab_roots"]["1m"].append(block_content)
+        local_opt_ledger["current_1m_hash_value"]=prev_1m_block_hash
+        local_opt_ledger["slab_roots"]["1d"] = [local_opt_ledger["slab_roots"]["1d"][-1]]
+        month_counter+=1
+
+    # compute the day ledger
+
+
+    comparison_matrix["with_optimization"]["size"].append(get_deep_size(local_opt_ledger)) # in bytes
+    comparison_matrix["with_optimization"]["time"].append(read_time*(10/_10m_slab_span))
+    # Operation for optimized ledger - END
+
+
+
+    print(local_opt_ledger["block_height"],"\n\n")
+    # print(block_height)
+
+
+    time.sleep(_10m_slab_span)
 
 
 plot_optimization_comparison(comparison_matrix)
+
+
+
+
+
+
+
+
+
+
 
 
