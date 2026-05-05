@@ -302,7 +302,7 @@ prev_10m_block_hash, prev_1h_block_hash, prev_1d_block_hash, prev_1m_block_hash,
 block_height = 0
 
 month_counter = 0
-while block_height<10000:
+while block_height<10:
     print(f"Processing reading index: {block_height}") if block_height % 100 == 0 else None
 
     METER_READING_DATA = read_meter(hw)
@@ -351,7 +351,7 @@ while block_height<10000:
 
     # compute the hour ledger
     # if len(local_opt_ledger["slab_roots"]["10mi"]) > 2 and local_opt_ledger["slab_roots"]["10mi"][-1]["timestamp"] - local_opt_ledger["slab_roots"]["10mi"][0]["timestamp"] >= _10m_slab_span*hour_slab_span:
-    if len(local_opt_ledger["slab_roots"]["10mi"]) >= hour_slab_span:
+    if len(local_opt_ledger["slab_roots"]["10mi"]) > hour_slab_span:
         block_content={
             "ledger_id": local_opt_ledger["ledger_id"],
             "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
@@ -363,10 +363,10 @@ while block_height<10000:
         prev_1h_block_hash = data_enc(block_content)
         local_opt_ledger["slab_roots"]["1h"].append(block_content)
         local_opt_ledger["current_1h_hash_value"]=prev_1h_block_hash
-        # local_opt_ledger["slab_roots"]["10mi"] = [local_opt_ledger["slab_roots"]["10mi"][-1]]
-        local_opt_ledger["slab_roots"]["10mi"] = []
+        local_opt_ledger["slab_roots"]["10mi"] = [local_opt_ledger["slab_roots"]["10mi"][-1]]
+        # local_opt_ledger["slab_roots"]["10mi"] = []
 
-    if len(local_opt_ledger["slab_roots"]["1h"]) >= day_slab_span:
+    if len(local_opt_ledger["slab_roots"]["1h"]) > day_slab_span:
         block_content={
             "ledger_id": local_opt_ledger["ledger_id"],
             "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
@@ -378,10 +378,10 @@ while block_height<10000:
         prev_1d_block_hash = data_enc(block_content)
         local_opt_ledger["slab_roots"]["1d"].append(block_content)
         local_opt_ledger["current_1d_hash_value"]=prev_1d_block_hash
-        # local_opt_ledger["slab_roots"]["1h"] = [local_opt_ledger["slab_roots"]["1h"][-1]]
-        local_opt_ledger["slab_roots"]["1h"] = []
+        local_opt_ledger["slab_roots"]["1h"] = [local_opt_ledger["slab_roots"]["1h"][-1]]
+        # local_opt_ledger["slab_roots"]["1h"] = []
 
-    if len(local_opt_ledger["slab_roots"]["1d"]) >= month_slab_span[month_counter%12]:
+    if len(local_opt_ledger["slab_roots"]["1d"]) > month_slab_span[month_counter%12]:
         block_content={
             "ledger_id": local_opt_ledger["ledger_id"],
             "quorum_slice_id": local_opt_ledger["quorum_slice_id"],
@@ -393,12 +393,14 @@ while block_height<10000:
         prev_1m_block_hash = data_enc(block_content)
         local_opt_ledger["slab_roots"]["1m"].append(block_content)
         local_opt_ledger["current_1m_hash_value"]=prev_1m_block_hash
-        # local_opt_ledger["slab_roots"]["1d"] = [local_opt_ledger["slab_roots"]["1d"][-1]]
-        local_opt_ledger["slab_roots"]["1d"] = []
+        local_opt_ledger["slab_roots"]["1d"] = [local_opt_ledger["slab_roots"]["1d"][-1]]
+        # local_opt_ledger["slab_roots"]["1d"] = []
         month_counter+=1
 
     comparison_matrix["with_optimization"]["size"].append(get_deep_size(local_opt_ledger)) # in bytes
-    comparison_matrix["with_optimization"]["time"].append(block_height)                     # reading index
+    comparison_matrix["with_optimization"]["time"].append(block_height)
+
+    print(local_opt_ledger, '\n')                   # reading index
     # Operation for optimized ledger - END
 
     time.sleep(_10m_slab_span)
