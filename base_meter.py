@@ -241,7 +241,7 @@ def proceed_init():
 	print(f"[{ASSIGNED_ID}] INIT process completed. With quorum statuses: {QUORUM_SLICE}")
 	# TODO: vlidate the quorum status from the CA
 
-	quorum_consensus_init()
+	# quorum_consensus_init()
 
 def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info):
 	try_count = 0
