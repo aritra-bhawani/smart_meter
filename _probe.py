@@ -20,7 +20,8 @@ def start_meter(base_rate: float = 0.0, variability: float = 0.0002):
             increment = max(increment, 0)
             with meter_locks[hw_address]:
                 meter_states[hw_address] += increment
-            time.sleep(1)
+            # time.sleep(1)
+            time.sleep(0.001)
 
     thread = threading.Thread(target=meter_loop, daemon=True)
     thread.start()

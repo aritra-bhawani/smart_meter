@@ -241,6 +241,37 @@ def plot_optimization_comparison(data):
 
 # Misc --- END
 
+def verify_reading(ledger, reading_value, block_height, timestamp, prev_10m_hash):
+    consumption_hash = data_enc(reading_value)
+    block_content = {
+        "ledger_id": ledger["ledger_id"],
+        "quorum_slice_id": ledger["quorum_slice_id"],
+        "block_height": block_height,
+        "timestamp": timestamp,
+        "consumption_value_hash": consumption_hash,
+        "prev_10m_block_hash": prev_10m_hash
+    }
+    block_hash = data_enc(block_content)
+
+    # Strong: full block hash match in the live 10m window
+    for b in ledger["slab_roots"]["10mi"]:
+        if data_enc(b) == block_hash:
+            return True, "10m"
+
+    # Fallback: consumption hash match in rolled-up checkpoints
+    for cp in ledger["slab_roots"]["1h"]:
+        if cp.get("consumption_value_hash") == consumption_hash:
+            return True, "1h (consumption hash only)"
+
+    for cp in ledger["slab_roots"]["1d"]:
+        if cp.get("consumption_value_hash") == consumption_hash:
+            return True, "1d (consumption hash only)"
+
+    for cp in ledger["slab_roots"]["1m"]:
+        if cp.get("consumption_value_hash") == consumption_hash:
+            return True, "1m (consumption hash only)"
+    return False, "not found in chain"
+
 comparison_matrix = {"with_optimization": {"size":[], "time":[]}, "without_optimization": {"size":[], "time":[]}}
 
 # RAM usage
@@ -278,6 +309,9 @@ opt_ledger = {
     "consumption_value_hash": None,
     "current_10m_hash_value": None,
     "current_1h_hash_value": None,
+    "current_1d_hash_value": None,
+    "current_1m_hash_value": None,
+    "current_1y_hash_value": None,
     "slab_roots": {
         "10mi":[],
         "1h":[],
@@ -302,11 +336,12 @@ prev_10m_block_hash, prev_1h_block_hash, prev_1d_block_hash, prev_1m_block_hash,
 block_height = 0
 
 month_counter = 0
-while block_height<10:
+while block_height<200:
     print(f"Processing reading index: {block_height}") if block_height % 100 == 0 else None
 
     METER_READING_DATA = read_meter(hw)
     read_time = (datetime.fromisoformat(METER_READING_DATA['timestamp']).timestamp())
+    # print(f"Read meter: {METER_READING_DATA}")
 
     # Operation for basic ledger - START
     block_content={
@@ -348,6 +383,15 @@ while block_height<10:
     local_opt_ledger["last_timestamp"]=read_time
     local_opt_ledger["consumption_value_hash"]=data_enc(METER_READING_DATA['value'])
     local_opt_ledger["current_10m_hash_value"]=prev_10m_block_hash
+
+    ok, level = verify_reading(
+        local_opt_ledger,
+        METER_READING_DATA['value'],
+        block_height - 1,
+        read_time,
+        block_content["prev_10m_block_hash"]
+    )
+    print(f"[verify] block {block_height - 1}: {ok} via {level}")
 
     # compute the hour ledger
     # if len(local_opt_ledger["slab_roots"]["10mi"]) > 2 and local_opt_ledger["slab_roots"]["10mi"][-1]["timestamp"] - local_opt_ledger["slab_roots"]["10mi"][0]["timestamp"] >= _10m_slab_span*hour_slab_span:
@@ -400,7 +444,7 @@ while block_height<10:
     comparison_matrix["with_optimization"]["size"].append(get_deep_size(local_opt_ledger)) # in bytes
     comparison_matrix["with_optimization"]["time"].append(block_height)
 
-    print(local_opt_ledger, '\n')                   # reading index
+    # print(local_opt_ledger, '\n')
     # Operation for optimized ledger - END
 
     time.sleep(_10m_slab_span)
