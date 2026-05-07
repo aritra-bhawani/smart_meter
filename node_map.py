@@ -157,6 +157,6 @@ def draw_quorum_graph():
 
 
 if __name__ == "__main__":
-    # draw_quorum_graph()
+    draw_quorum_graph()
     draw_complete_network_graph()
 

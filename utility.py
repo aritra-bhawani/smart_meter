@@ -14,6 +14,7 @@ from _crypto import (
 	rsa_generate,
 	rsa_sign,
 	rsa_verify,
+	data_enc,
 )
 # For docker
 CA_IP = os.getenv("CA_HOST", "ca")     # <— docker service name
@@ -279,7 +280,7 @@ def handle_client(conn, addr):
 			sock.close()
 			conn.close()
 			return
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key,  'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None}
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key, 'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None, 'last_10m_hash': '0'*64}
 		# Connecting to CA to validate the quorum key and get the quorum of this node ============ START
 		try_count = 0
 		peer_nodes = None
@@ -316,8 +317,8 @@ def handle_client(conn, addr):
 				)
 				data = aes_decrypt(aes_key, sock.recv(4096))
 				ca_msg, ca_sig = data.split("|", 1)
-					if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
-						print(f"[{ASSIGNED_ID}] CA signature verification failed for selected peers")
+				if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+					print(f"[{ASSIGNED_ID}] CA signature verification failed for selected peers")
 					sock.close()
 					break
 				peer_nodes = ca_msg.split(";")
@@ -434,10 +435,13 @@ def handle_client(conn, addr):
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 
 	elif command == "METER_REQ":
-		block_height = client_msg.split(",")[2]
-		reading_timestamp = client_msg.split(",")[3]
-		reading_value = client_msg.split(",")[4]
-		# # Verify client signature
+		parts = client_msg.split(",")
+		block_height = parts[2]
+		reading_timestamp = parts[3]
+		reading_value = parts[4]
+		prev_10m_hash = parts[6] if len(parts) > 6 else "0" * 64
+
+		# Verify client signature
 		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
 		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
 		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
@@ -448,7 +452,44 @@ def handle_client(conn, addr):
 			conn.close()
 			return
 
-		print(f"[{ASSIGNED_ID}] Received meter reading from {c_assigned_id}: Height={block_height}, Timestamp={reading_timestamp}, Value={reading_value}")
+		# Part 1: validate chain continuity (flat 10m chain)
+		last_hash = SERVING_QUORUM_CONNECTIONS[c_assigned_id].get('last_10m_hash', '0' * 64)
+		if prev_10m_hash != last_hash:
+			print(f"[{ASSIGNED_ID}] Chain break from {c_assigned_id}: expected ...{last_hash[-8:]} got ...{prev_10m_hash[-8:]}")
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+
+		# Recompute block hash and store for next validation
+		block_content = {
+			"ledger_id": c_assigned_id,
+			"quorum_slice_id": c_assigned_id,
+			"block_height": int(block_height),
+			"timestamp": reading_timestamp,
+			"consumption_value_hash": data_enc(float(reading_value)),
+			"prev_10m_block_hash": prev_10m_hash
+		}
+		new_hash = data_enc(block_content)
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_10m_hash'] = new_hash
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_block_height'] = int(block_height)
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_timestamp'] = reading_timestamp
+
+		# try:
+		# 	db_file = f"Utility_{ASSIGNED_ID}_DB.db"
+		# 	con = sqlite3.connect(db_file)
+		# 	c = con.cursor()
+		# 	c.execute(
+		# 		"INSERT INTO ledger (meter_id, meter_reading, reading_timestamp, block_height, block_hash, prev_block_hash, timestamp, quorum_slice_id, slab_roots, quorum_signatures, consensus_status) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+		# 		(c_assigned_id, float(reading_value), reading_timestamp, int(block_height), new_hash, prev_10m_hash, reading_timestamp, c_assigned_id, "", "", 1)
+		# 	)
+		# 	con.commit()
+		# 	con.close()
+		# except Exception as e:
+		# 	print(f"[{ASSIGNED_ID}] DB write failed for block {block_height}: {e}")
+
+		print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} VALID — hash ...{new_hash[-8:]}")
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))	

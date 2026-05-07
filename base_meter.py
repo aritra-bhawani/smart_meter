@@ -38,16 +38,16 @@ BASE_METER_ID = random.randint(1, 1000)
 
 TRY_CYCLE_LIMIT = 3
 
-global QUORUM_SLICE
+global QUORUM_SLICE # the meter's own quorum slice with the node ids and their ip and port and public keys and validation status
 QUORUM_SLICE = dict()
 
-global SERVING_QUORUM_CONNECTIONS
+global SERVING_QUORUM_CONNECTIONS # connections from the quorum nodes to this meter, with their public keys and quorum keys and other info
 SERVING_QUORUM_CONNECTIONS = dict()
 
-global PEER_NODE_CONNECTIONS
+global PEER_NODE_CONNECTIONS # connections from the peer nodes to this meter, with their public keys and quorum keys and other info
 PEER_NODE_CONNECTIONS = dict()
 
-global SERVING_PEER_NODE_CONNECTIONS
+global SERVING_PEER_NODE_CONNECTIONS # connections from the peer nodes to this meter, with their public keys and quorum keys and other info
 SERVING_PEER_NODE_CONNECTIONS = dict()
 
 # Quorum Size
@@ -148,34 +148,77 @@ def connect_to_quorum_node(quorum_key, quorum_slice):
 	)
 	print(f"[{ASSIGNED_ID}] Finished connecting to quorum nodes. All validated: {all_validated}")
 
+QUORUM_THRESHOLD = 0.66
+
+def _broadcast_meter_req(node_id, node_info, msg, results, lock):
+	try:
+		soc = socket.create_connection((node_info['ip'], int(node_info['port'])), timeout=10)
+		conn_status, aes_key = initial_channel_setup(soc)
+		if not conn_status:
+			soc.close()
+			with lock:
+				results[node_id] = False
+			return
+		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
+		soc.settimeout(60)
+		resp = aes_decrypt(aes_key, soc.recv(1024))
+		with lock:
+			results[node_id] = resp.split("|")[0] == "SUCCESS"
+		soc.close()
+	except Exception as e:
+		print(f"[{ASSIGNED_ID}] Error sending to {node_id}: {e}")
+		with lock:
+			results[node_id] = False
+
 def quorum_consensus_init():
 	hw = start_meter(base_rate=0.002, variability=0.0001)
 	block_height = 0
+	prev_10m_hash = "0" * 64
+
 	while True:
-		time.sleep(60)
 		METER_READING_DATA = read_meter(hw)
 		print(f"[{ASSIGNED_ID}] Meter Reading: {METER_READING_DATA}")
-		for i in QUORUM_SLICE:
-			if QUORUM_SLICE[i]['validated'] is True:
-				print(f"[{ASSIGNED_ID}] Sending reading to Quorum Node {i}")
-				try:
-					soc = socket.create_connection((QUORUM_SLICE[i]['ip'], int(QUORUM_SLICE[i]['port'])), timeout=10)
-					conn_status, aes_key = initial_channel_setup(soc)
-					if not conn_status:
-						soc.close()
-						continue
 
-					msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']}, {data_enc(METER_READING_DATA)}"
-					soc.sendall(
-						aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
-					)
-					soc.settimeout(60)
-					data = aes_decrypt(aes_key, soc.recv(1024))
-					print(f"[{ASSIGNED_ID}] Response from Quorum Node {i} for reading submission: {data}")
-				except Exception as e:
-					print(f"[{ASSIGNED_ID}] Error sending reading to Quorum Node {i}: {e}")
-					continue
-		block_height += 1
+		block_content = {
+			"ledger_id": ASSIGNED_ID,
+			"quorum_slice_id": ASSIGNED_ID,
+			"block_height": block_height,
+			"timestamp": METER_READING_DATA['timestamp'],
+			"consumption_value_hash": data_enc(METER_READING_DATA['value']),
+			"prev_10m_block_hash": prev_10m_hash
+		}
+		current_hash = data_enc(block_content)
+		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{data_enc(METER_READING_DATA)},{prev_10m_hash}"
+
+		results = {}
+		lock = threading.Lock()
+		validated_nodes = [nid for nid in QUORUM_SLICE if QUORUM_SLICE[nid]['validated'] is True]
+
+		threads = []
+		for node_id in validated_nodes:
+			t = threading.Thread(
+				target=_broadcast_meter_req,
+				args=(node_id, QUORUM_SLICE[node_id], msg, results, lock),
+				daemon=True
+			)
+			t.start()
+			threads.append(t)
+		for t in threads:
+			t.join(timeout=65)
+
+		total = len(validated_nodes)
+		agreed = sum(1 for v in results.values() if v)
+		ratio = agreed / total if total > 0 else 0
+		accepted = ratio >= QUORUM_THRESHOLD
+
+		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
+
+		if accepted:
+			prev_10m_hash = current_hash
+			block_height += 1
+
+		time.sleep(30)
+
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
 	time.sleep(random.randint(10,20))  # simulate delay
@@ -238,10 +281,11 @@ def proceed_init():
 
 	# the meter will now cooncect to the nodes wiht the ip and port provided
 	connect_to_quorum_node(QUORUM_VERIFICATION_KEY, QUORUM_SLICE)
-	print(f"[{ASSIGNED_ID}] INIT process completed. With quorum statuses: {QUORUM_SLICE}")
+	print(f"[{ASSIGNED_ID}] INIT process completed. With quorum status : {QUORUM_SLICE}")
 	# TODO: vlidate the quorum status from the CA
 
-	# quorum_consensus_init()
+	time.sleep(random.uniform(10, 30))
+	quorum_consensus_init()
 
 def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info):
 	try_count = 0
@@ -433,7 +477,7 @@ def handle_client(conn, addr):
 			sock.close()
 			conn.close()
 			return
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key, 'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None}
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id] = {'ip': addr[0], 'port': addr[1], 'n_c': client_n, 'e_c': client_e, 'quorum_key': quorum_key, 'last_meter_readings': None, 'last_block_height': None, 'last_timestamp': None, 'last_10m_hash': '0'*64}
 		# Connecting to CA to validate the quorum key and get the quorum of this node ============ START
 		try_count = 0
 		peer_nodes = None
@@ -589,10 +633,13 @@ def handle_client(conn, addr):
 		# print(f"[{ASSIGNED_ID}] Current Serving Peer Node Connections: {SERVING_PEER_NODE_CONNECTIONS}")
 
 	elif command == "METER_REQ":
-		block_height = client_msg.split(",")[2]
-		reading_timestamp = client_msg.split(",")[3]
-		reading_value = client_msg.split(",")[4]
-		reading_value_enc = client_msg.split(",")[5]
+		parts = client_msg.split(",")
+		block_height = parts[2]
+		reading_timestamp = parts[3]
+		reading_value = parts[4]
+		reading_value_enc = parts[5]
+		prev_10m_hash = parts[6] if len(parts) > 6 else "0" * 64
+
 		# Verify client signature
 		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
 		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
@@ -603,11 +650,32 @@ def handle_client(conn, addr):
 			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 			conn.close()
 			return
-		# validate and store the meter reading
-		time.sleep(2) # absorption delay
-		print(f"[{ASSIGNED_ID}] node list for {c_assigned_id}: {PEER_NODE_CONNECTIONS[c_assigned_id]}")
 
-		print(f"[{ASSIGNED_ID}] Received meter reading from {c_assigned_id}: Height={block_height}, Timestamp={reading_timestamp}, Value={reading_value}")
+		# Part 1: validate chain continuity against stored last hash
+		last_hash = SERVING_QUORUM_CONNECTIONS[c_assigned_id].get('last_10m_hash', '0' * 64)
+		if prev_10m_hash != last_hash:
+			print(f"[{ASSIGNED_ID}] Chain break from {c_assigned_id}: expected ...{last_hash[-8:]} got ...{prev_10m_hash[-8:]}")
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+
+		# Recompute block hash and store for next validation
+		block_content = {
+			"ledger_id": c_assigned_id,
+			"quorum_slice_id": c_assigned_id,
+			"block_height": int(block_height),
+			"timestamp": reading_timestamp,
+			"consumption_value_hash": data_enc(float(reading_value)),
+			"prev_10m_block_hash": prev_10m_hash
+		}
+		new_hash = data_enc(block_content)
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_10m_hash'] = new_hash
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_block_height'] = int(block_height)
+		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_timestamp'] = reading_timestamp
+
+		print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} VALID — hash")
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))

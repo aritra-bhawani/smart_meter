@@ -336,7 +336,7 @@ prev_10m_block_hash, prev_1h_block_hash, prev_1d_block_hash, prev_1m_block_hash,
 block_height = 0
 
 month_counter = 0
-while block_height<200:
+while block_height<20000:
     print(f"Processing reading index: {block_height}") if block_height % 100 == 0 else None
 
     METER_READING_DATA = read_meter(hw)
@@ -391,7 +391,7 @@ while block_height<200:
         read_time,
         block_content["prev_10m_block_hash"]
     )
-    print(f"[verify] block {block_height - 1}: {ok} via {level}")
+    # print(f"[verify] block {block_height - 1}: {ok} via {level}")
 
     # compute the hour ledger
     # if len(local_opt_ledger["slab_roots"]["10mi"]) > 2 and local_opt_ledger["slab_roots"]["10mi"][-1]["timestamp"] - local_opt_ledger["slab_roots"]["10mi"][0]["timestamp"] >= _10m_slab_span*hour_slab_span:
