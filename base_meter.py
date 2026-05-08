@@ -188,7 +188,9 @@ def quorum_consensus_init():
 			"prev_10m_block_hash": prev_10m_hash
 		}
 		current_hash = data_enc(block_content)
-		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{data_enc(METER_READING_DATA)},{prev_10m_hash}"
+		consumption_value_hash = block_content["consumption_value_hash"]
+		# data_enc(METER_READING_DATA)
+		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{consumption_value_hash},{prev_10m_hash}"
 
 		results = {}
 		lock = threading.Lock()
@@ -637,7 +639,7 @@ def handle_client(conn, addr):
 		block_height = parts[2]
 		reading_timestamp = parts[3]
 		reading_value = parts[4]
-		reading_value_enc = parts[5]
+		consumption_value_hash = parts[5]
 		prev_10m_hash = parts[6] if len(parts) > 6 else "0" * 64
 
 		# Verify client signature
@@ -667,7 +669,7 @@ def handle_client(conn, addr):
 			"quorum_slice_id": c_assigned_id,
 			"block_height": int(block_height),
 			"timestamp": reading_timestamp,
-			"consumption_value_hash": data_enc(float(reading_value)),
+			"consumption_value_hash": consumption_value_hash,
 			"prev_10m_block_hash": prev_10m_hash
 		}
 		new_hash = data_enc(block_content)
@@ -675,7 +677,7 @@ def handle_client(conn, addr):
 		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_block_height'] = int(block_height)
 		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_timestamp'] = reading_timestamp
 
-		print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} VALID — hash")
+		print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} VALID — value={reading_value} hash=...{new_hash[-8:]}")
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
