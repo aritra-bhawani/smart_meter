@@ -50,6 +50,9 @@ PEER_NODE_CONNECTIONS = dict()
 global SERVING_PEER_NODE_CONNECTIONS # connections from the peer nodes to this meter, with their public keys and quorum keys and other info
 SERVING_PEER_NODE_CONNECTIONS = dict()
 
+global PEER_CHAIN_STATE  # per-meter hash state used when acting as a peer validator
+PEER_CHAIN_STATE = dict()
+
 # Quorum Size
 METER_COUNT = 10
 UTILITY_COUNT = 3
@@ -149,6 +152,50 @@ def connect_to_quorum_node(quorum_key, quorum_slice):
 	print(f"[{ASSIGNED_ID}] Finished connecting to quorum nodes. All validated: {all_validated}")
 
 QUORUM_THRESHOLD = 0.66
+
+def _consult_single_peer(peer_id, peer_info, msg, results, lock):
+	try:
+		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=10)
+		conn_status, aes_key = initial_channel_setup(soc)
+		if not conn_status:
+			soc.close()
+			with lock:
+				results[peer_id] = False
+			return
+		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
+		soc.settimeout(30)
+		resp = aes_decrypt(aes_key, soc.recv(1024))
+		with lock:
+			results[peer_id] = resp.split("|")[0] == "SUCCESS"
+		soc.close()
+	except Exception as e:
+		print(f"[{ASSIGNED_ID}] Peer consult error {peer_id}: {e}")
+		with lock:
+			results[peer_id] = False
+
+def consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_value_hash, prev_10m_hash):
+	peers = {
+		pid: info for pid, info in PEER_NODE_CONNECTIONS.get(c_assigned_id, {}).items()
+		if info.get('validated')
+	}
+	if not peers:
+		return 0, 0
+	msg = f"{ASSIGNED_ID},PEER_VALIDATE_REQ,{c_assigned_id},{block_height},{reading_timestamp},{consumption_value_hash},{prev_10m_hash}"
+	results = {}
+	lock = threading.Lock()
+	threads = []
+	for peer_id, peer_info in peers.items():
+		t = threading.Thread(
+			target=_consult_single_peer,
+			args=(peer_id, peer_info, msg, results, lock),
+			daemon=True
+		)
+		t.start()
+		threads.append(t)
+	for t in threads:
+		t.join(timeout=35)
+	agreed = sum(1 for v in results.values() if v)
+	return agreed, len(peers)
 
 def _broadcast_meter_req(node_id, node_info, msg, results, lock):
 	try:
@@ -663,7 +710,7 @@ def handle_client(conn, addr):
 			conn.close()
 			return
 
-		# Recompute block hash and store for next validation
+		# Compute new block hash (not stored yet — deferred to after Part 2)
 		block_content = {
 			"ledger_id": c_assigned_id,
 			"quorum_slice_id": c_assigned_id,
@@ -673,11 +720,74 @@ def handle_client(conn, addr):
 			"prev_10m_block_hash": prev_10m_hash
 		}
 		new_hash = data_enc(block_content)
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_10m_hash'] = new_hash
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_block_height'] = int(block_height)
-		SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_timestamp'] = reading_timestamp
 
-		print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} VALID — value={reading_value} hash=...{new_hash[-8:]}")
+		# Part 2: consult sub-quorum peers
+		agreed, total = consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_value_hash, prev_10m_hash)
+		if total > 0:
+			peer_ratio = agreed / total
+			peer_accepted = peer_ratio >= QUORUM_THRESHOLD
+			print(f"[{ASSIGNED_ID}] Block {block_height} peer consensus: {agreed}/{total} ({peer_ratio*100:.1f}%)")
+		else:
+			peer_accepted = True
+			print(f"[{ASSIGNED_ID}] Block {block_height} no peers available — accepting on Part 1 alone")
+
+		if peer_accepted:
+			SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_10m_hash'] = new_hash
+			SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_block_height'] = int(block_height)
+			SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_timestamp'] = reading_timestamp
+			print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} ACCEPTED — value={reading_value} hash=...{new_hash[-8:]}")
+			response_data = "SUCCESS"
+		else:
+			print(f"[{ASSIGNED_ID}] Block {block_height} from {c_assigned_id} REJECTED by peers")
+			response_data = "REJECTED"
+		sig_s = rsa_sign(CL_D, CL_N, response_data)
+		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+
+	elif command == "PEER_VALIDATE_REQ":
+		parts = client_msg.split(",")
+		base_meter_id = parts[2]
+		block_height = parts[3]
+		reading_timestamp = parts[4]
+		consumption_value_hash = parts[5]
+		prev_10m_hash = parts[6] if len(parts) > 6 else "0" * 64
+
+		# Verify signature of the requesting quorum node
+		requester_info = SERVING_PEER_NODE_CONNECTIONS.get(base_meter_id, {}).get(c_assigned_id)
+		if not requester_info:
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+		if not rsa_verify(requester_info['e_c'], requester_info['n_c'], client_msg, int(client_sig)):
+			print(f"[{ASSIGNED_ID}] Peer validate sig failed from {c_assigned_id} for {base_meter_id}")
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+
+		# Check peer chain state for this base meter
+		last_hash = PEER_CHAIN_STATE.get(base_meter_id, '0' * 64)
+		if prev_10m_hash != last_hash:
+			print(f"[{ASSIGNED_ID}] Peer chain break for {base_meter_id}: expected ...{last_hash[-8:]} got ...{prev_10m_hash[-8:]}")
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
+
+		block_content = {
+			"ledger_id": base_meter_id,
+			"quorum_slice_id": base_meter_id,
+			"block_height": int(block_height),
+			"timestamp": reading_timestamp,
+			"consumption_value_hash": consumption_value_hash,
+			"prev_10m_block_hash": prev_10m_hash
+		}
+		new_hash = data_enc(block_content)
+		PEER_CHAIN_STATE[base_meter_id] = new_hash
+		print(f"[{ASSIGNED_ID}] Peer validated block {block_height} for {base_meter_id} — hash=...{new_hash[-8:]}")
 		response_data = "SUCCESS"
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
