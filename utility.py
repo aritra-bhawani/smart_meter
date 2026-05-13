@@ -569,16 +569,7 @@ def handle_client(conn, addr):
 			conn.close()
 			return
 
-		# Check peer chain state for this base meter
-		last_hash = PEER_CHAIN_STATE.get(base_meter_id, '0' * 64)
-		if prev_10m_hash != last_hash:
-			print(f"[{ASSIGNED_ID}] Peer chain break for {base_meter_id}: expected ...{last_hash[-8:]} got ...{prev_10m_hash[-8:]}")
-			response_data = "REJECTED"
-			sig_s = rsa_sign(CL_D, CL_N, response_data)
-			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
-			conn.close()
-			return
-
+		# Compute hash first so we can detect idempotent re-validation
 		block_content = {
 			"ledger_id": base_meter_id,
 			"quorum_slice_id": base_meter_id,
@@ -588,9 +579,23 @@ def handle_client(conn, addr):
 			"prev_10m_block_hash": prev_10m_hash
 		}
 		new_hash = data_enc(block_content)
-		PEER_CHAIN_STATE[base_meter_id] = new_hash
-		print(f"[{ASSIGNED_ID}] Peer validated block {block_height} for {base_meter_id} — hash=...{new_hash[-8:]}")
-		response_data = "SUCCESS"
+		last_hash = PEER_CHAIN_STATE.get(base_meter_id, '0' * 64)
+
+		if new_hash == last_hash:
+			# Another quorum node already validated this exact block — agree idempotently
+			print(f"[{ASSIGNED_ID}] Peer already validated block {block_height} for {base_meter_id} (idempotent)")
+			response_data = "SUCCESS"
+		elif prev_10m_hash == last_hash:
+			PEER_CHAIN_STATE[base_meter_id] = new_hash
+			print(f"[{ASSIGNED_ID}] Peer validated block {block_height} for {base_meter_id} — hash=...{new_hash[-8:]}")
+			response_data = "SUCCESS"
+		else:
+			print(f"[{ASSIGNED_ID}] Peer chain break for {base_meter_id}: expected ...{last_hash[-8:]} got ...{prev_10m_hash[-8:]}")
+			response_data = "REJECTED"
+			sig_s = rsa_sign(CL_D, CL_N, response_data)
+			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
+			conn.close()
+			return
 		sig_s = rsa_sign(CL_D, CL_N, response_data)
 		conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 
