@@ -218,7 +218,7 @@ def _broadcast_meter_req(node_id, node_info, msg, results, lock):
 			results[node_id] = False
 
 def quorum_consensus_init():
-	hw = start_meter(base_rate=0.002, variability=0.0001)
+	hw = start_meter(base_rate=0.002, variability=0.0001) # simulate a meter reading
 	block_height = 0
 	prev_10m_hash = "0" * 64
 
@@ -240,7 +240,7 @@ def quorum_consensus_init():
 		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{consumption_value_hash},{prev_10m_hash}"
 
 		results = {}
-		lock = threading.Lock()
+		lock = threading.Lock() # mutually exclusive lock for updating results dict from multiple threads
 		validated_nodes = [nid for nid in QUORUM_SLICE if QUORUM_SLICE[nid]['validated'] is True]
 
 		threads = []
