@@ -58,6 +58,7 @@ METER_COUNT = 10
 UTILITY_COUNT = 3
 
 QUORUM_PEER_SIZE = 5
+BLOCK_HEIGHT_LIMIT = 3
 
 # ======================
 # CLIENT FLOW
@@ -92,7 +93,7 @@ def connect_to_quorum_node_thread(quorum_key, node_id, node_info):
 			try_count += 1
 			node_ip = node_info['ip']
 			node_port = node_info['port']
-			soc = socket.create_connection((node_ip, int(node_port)), timeout=10)
+			soc = socket.create_connection((node_ip, int(node_port)), timeout=30)
 			# establish secure AES channel
 			conn_status, aes_key = initial_channel_setup(soc)
 			if not conn_status:
@@ -141,7 +142,7 @@ def connect_to_quorum_node(quorum_key, quorum_slice):
 	# Wait for all peer-connection threads to finish (with a sensible timeout per thread)
 	for t in threads:
 		try:
-			t.join(timeout=10)
+			t.join(timeout=70)
 		except RuntimeError:
 			continue
 
@@ -155,7 +156,7 @@ QUORUM_THRESHOLD = 0.66
 
 def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 	try:
-		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=10)
+		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=30)
 		conn_status, aes_key = initial_channel_setup(soc)
 		if not conn_status:
 			soc.close()
@@ -163,7 +164,7 @@ def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 				results[peer_id] = False
 			return
 		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
-		soc.settimeout(30)
+		soc.settimeout(60)
 		resp = aes_decrypt(aes_key, soc.recv(1024))
 		with lock:
 			results[peer_id] = resp.split("|")[0] == "SUCCESS"
@@ -193,13 +194,13 @@ def consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_va
 		t.start()
 		threads.append(t)
 	for t in threads:
-		t.join(timeout=35)
+		t.join(timeout=70)
 	agreed = sum(1 for v in results.values() if v)
 	return agreed, len(peers)
 
 def _broadcast_meter_req(node_id, node_info, msg, results, lock):
 	try:
-		soc = socket.create_connection((node_info['ip'], int(node_info['port'])), timeout=10)
+		soc = socket.create_connection((node_info['ip'], int(node_info['port'])), timeout=30)
 		conn_status, aes_key = initial_channel_setup(soc)
 		if not conn_status:
 			soc.close()
@@ -222,7 +223,7 @@ def quorum_consensus_init():
 	block_height = 0
 	prev_10m_hash = "0" * 64
 
-	while True:
+	while block_height < BLOCK_HEIGHT_LIMIT:
 		METER_READING_DATA = read_meter(hw)
 		print(f"[{ASSIGNED_ID}] Meter Reading: {METER_READING_DATA}")
 
@@ -267,6 +268,8 @@ def quorum_consensus_init():
 			block_height += 1
 
 		time.sleep(30)
+
+	print(f"[{ASSIGNED_ID}] Block generation complete — {BLOCK_HEIGHT_LIMIT} blocks committed to ledger.")
 
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
@@ -343,7 +346,7 @@ def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info)
 			try_count += 1
 			node_ip = node_info['ip']
 			node_port = node_info['port']
-			soc = socket.create_connection((node_ip, int(node_port)), timeout=10)
+			soc = socket.create_connection((node_ip, int(node_port)), timeout=30)
 			# establish secure AES channel
 			conn_status, aes_key = initial_channel_setup(soc)
 			if not conn_status:
@@ -393,7 +396,7 @@ def connect_to_quorum_peer(c_assigned_id, quorum_key, peer_connections):
 	# Wait for all peer-connection threads to finish (with a sensible timeout per thread)
 	for t in threads:
 		try:
-			t.join(timeout=10)
+			t.join(timeout=70)
 		except RuntimeError:
 			# If join fails for any reason, continue to the next thread
 			continue
@@ -484,7 +487,12 @@ def handle_client(conn, addr):
 		return
 	# SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
-	data = aes_decrypt(aes_key_cli, conn.recv(2048))
+	# data = aes_decrypt(aes_key_cli, conn.recv(2048))
+	raw = conn.recv(2048)
+	if not raw:
+		conn.close()
+		return
+	data = aes_decrypt(aes_key_cli, raw)
 	client_msg, client_sig = data.split("|", 1)
 	c_assigned_id, command = client_msg.split(",")[0], client_msg.split(",")[1]
 
