@@ -55,7 +55,7 @@ PEER_CHAIN_STATE = dict()
 
 # Quorum Sizes
 
-METER_COUNT = 10 #quorum meter count
+METER_COUNT = 5 #quorum meter count
 UTILITY_COUNT = 4 #quorum utility count
 QUORUM_PEER_SIZE = 7 #quorum meter peer count
 
@@ -71,6 +71,22 @@ def get_container_ip():
     ip = s.getsockname()[0]
     s.close()
     return ip
+
+def recv_all(sock, bufsize=4096, timeout=1.0):
+	chunks = []
+	original_timeout = sock.gettimeout()
+	sock.settimeout(timeout)
+	try:
+		while True:
+			chunk = sock.recv(bufsize)
+			if not chunk:
+				break
+			chunks.append(chunk)
+	except socket.timeout:
+		pass
+	finally:
+		sock.settimeout(original_timeout)
+	return b"".join(chunks)
 
 def initial_channel_setup(_socket):
 	try:
@@ -298,7 +314,7 @@ def proceed_init():
 		aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 	)
 
-	data = aes_decrypt(aes_key, sock.recv(4096))
+	data = aes_decrypt(aes_key, recv_all(sock))
 	ca_msg, ca_sig = data.split("|", 1)
 	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
 		print("CA signature verification failed")
@@ -321,7 +337,7 @@ def proceed_init():
 		aes_encrypt(aes_key, f"{selected_str}|{rsa_sign(CL_D, CL_N, selected_str)}")
 	)
 
-	data = aes_decrypt(aes_key, sock.recv(4096))
+	data = aes_decrypt(aes_key, recv_all(sock))
 	ca_msg, ca_sig = data.split("|", 1)
 	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
 		print("CA signature verification failed")
@@ -579,7 +595,7 @@ def handle_client(conn, addr):
 				sock.sendall(
 					aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 				)
-				data = aes_decrypt(aes_key, sock.recv(4096))
+				data = aes_decrypt(aes_key, recv_all(sock))
 				ca_msg, ca_sig = data.split("|", 1)
 				if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
 					print(f"[{ASSIGNED_ID}] CA signature verification failed for selected peers")
