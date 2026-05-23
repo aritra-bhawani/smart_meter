@@ -53,12 +53,13 @@ SERVING_PEER_NODE_CONNECTIONS = dict()
 global PEER_CHAIN_STATE  # per-meter hash state used when acting as a peer validator
 PEER_CHAIN_STATE = dict()
 
-# Quorum Size
-METER_COUNT = 10
-UTILITY_COUNT = 3
+# Quorum Sizes
 
-QUORUM_PEER_SIZE = 5
-BLOCK_HEIGHT_LIMIT = 3
+METER_COUNT = 10 #quorum meter count
+UTILITY_COUNT = 4 #quorum utility count
+QUORUM_PEER_SIZE = 7 #quorum meter peer count
+
+BLOCK_HEIGHT_LIMIT = 10
 
 # ======================
 # CLIENT FLOW
@@ -222,6 +223,8 @@ def quorum_consensus_init():
 	hw = start_meter(base_rate=0.002, variability=0.0001) # simulate a meter reading
 	block_height = 0
 	prev_10m_hash = "0" * 64
+	latencies = []
+	bytes_per_round = []
 
 	while block_height < BLOCK_HEIGHT_LIMIT:
 		METER_READING_DATA = read_meter(hw)
@@ -244,6 +247,7 @@ def quorum_consensus_init():
 		lock = threading.Lock() # mutually exclusive lock for updating results dict from multiple threads
 		validated_nodes = [nid for nid in QUORUM_SLICE if QUORUM_SLICE[nid]['validated'] is True]
 
+		t_start = time.time()
 		threads = []
 		for node_id in validated_nodes:
 			t = threading.Thread(
@@ -261,6 +265,9 @@ def quorum_consensus_init():
 		ratio = agreed / total if total > 0 else 0
 		accepted = ratio >= QUORUM_THRESHOLD
 
+		latencies.append(round(time.time() - t_start, 3))
+		bytes_per_round.append(len(msg.encode()))
+
 		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
 
 		if accepted:
@@ -269,7 +276,10 @@ def quorum_consensus_init():
 
 		time.sleep(30)
 
+	avg_latency = round(sum(latencies) / len(latencies), 3) if latencies else 0
+	avg_bytes   = round(sum(bytes_per_round) / len(bytes_per_round), 1) if bytes_per_round else 0
 	print(f"[{ASSIGNED_ID}] Block generation complete — {BLOCK_HEIGHT_LIMIT} blocks committed to ledger.")
+	print(f"[METRIC] meter={ASSIGNED_ID} BlockHeight={BLOCK_HEIGHT_LIMIT} quorum_meter_count={METER_COUNT} quorum_utility_count={UTILITY_COUNT} peer_size={QUORUM_PEER_SIZE} consensus_pct={round(ratio*100, 1)} threshold={QUORUM_THRESHOLD} avg_consensus_latency_s={avg_latency} avg_bytes_per_round={avg_bytes}")
 
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
