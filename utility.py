@@ -136,10 +136,11 @@ def get_container_ip():
 def initial_channel_setup(_socket):
 	try:
 		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
-		shared_int = dh_client(_socket)
+		shared_int, leftover = dh_client(_socket)
 		aes_key = kdf_aes_key(shared_int)
 
-		probe = aes_decrypt(aes_key, _socket.recv(1024))
+		probe_raw = leftover if leftover else _socket.recv(1024)
+		probe = aes_decrypt(aes_key, probe_raw)
 		x, y = probe.split(",", 1)
 		_socket.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
 		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END

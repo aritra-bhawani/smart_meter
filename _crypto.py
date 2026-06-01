@@ -24,24 +24,31 @@ def dh_server_exchange(conn) -> int:
     base = random.randint(10**8, 10**9)
     secret = random.randint(5, 20)
 
-    conn.sendall(f"{prime},{base}".encode())
-    A = int(conn.recv(1024).decode())
+    conn.sendall(f"{prime},{base}\n".encode())
+    A = int(conn.recv(1024).decode().split('\n')[0])
     B = pow(base, secret, prime)
-    conn.sendall(str(B).encode())
+    conn.sendall(f"{B}\n".encode())
 
     return pow(A, secret, prime)
 
 
-def dh_client(sock) -> int:
-    data = sock.recv(1024).decode()
+def dh_client(sock) -> tuple:
+    data = sock.recv(1024).decode().split('\n')[0]
     prime, base = map(int, data.split(",", 1))
     secret = random.randint(5, 20)
 
     A = pow(base, secret, prime)
-    sock.sendall(str(A).encode())
+    sock.sendall(f"{A}\n".encode())
 
-    B = int(sock.recv(1024).decode())
-    return pow(B, secret, prime)
+    raw = sock.recv(1024)
+    nl = raw.find(b'\n')
+    if nl >= 0:
+        B = int(raw[:nl].decode())
+        leftover = raw[nl+1:]
+    else:
+        B = int(raw.decode())
+        leftover = b""
+    return pow(B, secret, prime), leftover
 
 
 def aes_encrypt(key: bytes, msg: str) -> bytes:

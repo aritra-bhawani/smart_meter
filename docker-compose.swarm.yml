@@ -1,0 +1,86 @@
+services:
+  ca:
+    image: smart_meter-ca
+    build: .
+    environment:
+      - ROLE=ca
+      - HOST=0.0.0.0
+      - PORT=5005
+      - TZ=Europe/London
+    ports:
+      - "5005:5005"
+    volumes:
+      - ca_db:/app/data
+    networks:
+      - lightmeter
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager        # laptop
+
+  utility:
+    image: smart_meter-utility
+    build: .
+    environment:
+      - ROLE=utility
+      - CA_HOST=ca
+      - CA_PORT=5005
+      - UTILITY_PASS=12345
+      - TZ=Europe/London
+    networks:
+      - lightmeter
+    deploy:
+      replicas: 4
+      placement:
+        constraints:
+          - node.role == manager        # laptop
+
+  base_meter:
+    image: smart_meter-base_meter
+    build: .
+    environment:
+      - ROLE=base_meter
+      - CA_HOST=ca
+      - CA_PORT=5005
+      - BASE_METER_PASS=12345
+      - TZ=Europe/London
+    networks:
+      - lightmeter
+    deploy:
+      replicas: 15
+      placement:
+        constraints:
+          - node.role == manager        # laptop
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M
+
+  pi_meter:
+    image: smart_meter-base_meter       # same image, pinned to Pi
+    environment:
+      - ROLE=base_meter
+      - CA_HOST=ca
+      - CA_PORT=5005
+      - BASE_METER_PASS=12345
+      - TZ=Europe/London
+    networks:
+      - lightmeter
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.role == pi      # Pi — the device under test
+      resources:
+        limits:
+          cpus: "0.25"
+          memory: 512M
+
+networks:
+  lightmeter:
+    driver: overlay
+    attachable: true
+
+volumes:
+  ca_db:

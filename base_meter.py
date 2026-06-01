@@ -55,11 +55,11 @@ PEER_CHAIN_STATE = dict()
 
 # Quorum Sizes
 
-METER_COUNT = 5 #quorum meter count
+METER_COUNT = 24 #quorum meter count
 UTILITY_COUNT = 4 #quorum utility count
 QUORUM_PEER_SIZE = 7 #quorum meter peer count
 
-BLOCK_HEIGHT_LIMIT = 10
+BLOCK_HEIGHT_LIMIT = 5
 
 # ======================
 # CLIENT FLOW
@@ -91,10 +91,11 @@ def recv_all(sock, bufsize=4096, timeout=1.0):
 def initial_channel_setup(_socket):
 	try:
 		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
-		shared_int = dh_client(_socket)
+		shared_int, leftover = dh_client(_socket)
 		aes_key = kdf_aes_key(shared_int)
 
-		probe = aes_decrypt(aes_key, _socket.recv(1024))
+		probe_raw = leftover if leftover else _socket.recv(1024)
+		probe = aes_decrypt(aes_key, probe_raw)
 		x, y = probe.split(",", 1)
 		_socket.sendall(aes_encrypt(aes_key, f"{x},{x[::-1]}"))
 		# CLIENT - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
@@ -281,16 +282,17 @@ def quorum_consensus_init():
 		ratio = agreed / total if total > 0 else 0
 		accepted = ratio >= QUORUM_THRESHOLD
 
-		latencies.append(round(time.time() - t_start, 3))
+		round_latency = round(time.time() - t_start, 3)
+		latencies.append(round_latency)
 		bytes_per_round.append(len(msg.encode()))
 
-		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
+		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | latency: {round_latency}s | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
 
 		if accepted:
 			prev_10m_hash = current_hash
 			block_height += 1
 
-		time.sleep(30)
+		time.sleep(10)
 
 	avg_latency = round(sum(latencies) / len(latencies), 3) if latencies else 0
 	avg_bytes   = round(sum(bytes_per_round) / len(bytes_per_round), 1) if bytes_per_round else 0
@@ -493,8 +495,8 @@ def connect_to_ca():
 	sock.close()
 
 	# Reconnect to send INIT | selection for random base meter for this operation
-	if random.randint(0, 1):
-		proceed_init()
+	# if random.randint(0, 1):
+	proceed_init()
 
 # ======================
 # SERVER FLOW
