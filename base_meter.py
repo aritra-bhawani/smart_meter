@@ -496,7 +496,10 @@ def connect_to_ca():
 
 	# Reconnect to send INIT | selection for random base meter for this operation
 	# if random.randint(0, 1):
-	proceed_init()
+	# proceed_init()
+	
+	if os.getenv("INITIATE", "false").lower() == "true":
+		proceed_init()
 
 # ======================
 # SERVER FLOW

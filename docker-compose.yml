@@ -27,7 +27,7 @@ services:
     build: .
     environment:
       - ROLE=base_meter
-      # - CA_HOST=ca
+      - CA_HOST=ca
       - CA_PORT=5005
       - BASE_METER_PASS=12345
       - TZ=Europe/London

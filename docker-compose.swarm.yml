@@ -1,7 +1,6 @@
 services:
   ca:
     image: smart_meter-ca
-    build: .
     environment:
       - ROLE=ca
       - HOST=0.0.0.0
@@ -21,7 +20,6 @@ services:
 
   utility:
     image: smart_meter-utility
-    build: .
     environment:
       - ROLE=utility
       - CA_HOST=ca
@@ -35,10 +33,13 @@ services:
       placement:
         constraints:
           - node.role == manager        # laptop
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 10
 
   base_meter:
     image: smart_meter-base_meter
-    build: .
     environment:
       - ROLE=base_meter
       - CA_HOST=ca
@@ -56,6 +57,10 @@ services:
         limits:
           cpus: "0.5"
           memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 10
 
   pi_meter:
     image: smart_meter-base_meter       # same image, pinned to Pi
@@ -65,6 +70,7 @@ services:
       - CA_PORT=5005
       - BASE_METER_PASS=12345
       - TZ=Europe/London
+      - INITIATE=true
     networks:
       - lightmeter
     deploy:
@@ -76,6 +82,10 @@ services:
         limits:
           cpus: "0.25"
           memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 10s                      # Pi gets a longer delay — it needs quorum nodes up too
+        max_attempts: 10
 
 networks:
   lightmeter:
