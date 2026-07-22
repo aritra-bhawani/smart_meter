@@ -64,6 +64,7 @@ services:
 
   pi_meter:
     image: smart_meter-base_meter       # same image, pinned to Pi
+    entrypoint: bash -c 'until getent hosts ca > /dev/null 2>&1; do echo waiting for ca DNS...; sleep 3; done && bash /app/entrypoint.sh'
     environment:
       - ROLE=base_meter
       - CA_HOST=ca

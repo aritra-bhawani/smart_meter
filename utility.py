@@ -3,7 +3,7 @@ import socket
 import random
 import time
 import threading
-import sqlite3
+# import sqlite3
 from _crypto import (
 	kdf_aes_key,
 	dh_server_exchange,
@@ -53,6 +53,27 @@ QUORUM_PEER_SIZE = 5
 
 QUORUM_THRESHOLD = 0.66
 
+def recv_all(sock, bufsize=4096, inter_timeout=0.5):
+	chunks = []
+	original_timeout = sock.gettimeout()
+	try:
+		sock.settimeout(30.0)  # wait up to 30s for the first byte (CA may be slow)
+		chunk = sock.recv(bufsize)
+		if not chunk:
+			return b""
+		chunks.append(chunk)
+		sock.settimeout(inter_timeout)  # short gap between subsequent chunks
+		while True:
+			chunk = sock.recv(bufsize)
+			if not chunk:
+				break
+			chunks.append(chunk)
+	except socket.timeout:
+		pass
+	finally:
+		sock.settimeout(original_timeout)
+	return b"".join(chunks)
+
 def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 	try:
 		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=10)
@@ -63,7 +84,7 @@ def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 				results[peer_id] = False
 			return
 		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
-		soc.settimeout(30)
+		soc.settimeout(10)
 		resp = aes_decrypt(aes_key, soc.recv(1024))
 		with lock:
 			results[peer_id] = resp.split("|")[0] == "SUCCESS"
@@ -98,35 +119,38 @@ def consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_va
 	return agreed, len(peers)
 
 def init_db():
-    DB_FILE = f"Utility_{ASSIGNED_ID}_DB.db"
-    con = sqlite3.connect(DB_FILE)
-    c = con.cursor()
-    c.execute("SELECT name FROM sqlite_master WHERE type='table';")
-    r = [i[0] for i in c.fetchall()]
+    pass
+    # DB_FILE = f"Utility_{ASSIGNED_ID}_DB.db"
+    # con = sqlite3.connect(DB_FILE)
+    # c = con.cursor()
+    # c.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    # r = [i[0] for i in c.fetchall()]
 
-    if "ledger" not in r:
-        c.execute("""CREATE TABLE ledger (
-            meter_id           TEXT NOT NULL,
-			meter_reading      REAL,
-			reading_timestamp  INTEGER,
-            block_height        INTEGER NOT NULL,
-            block_hash          BLOB NOT NULL,
-            prev_block_hash     BLOB NOT NULL,
-            timestamp           INTEGER NOT NULL,
-            quorum_slice_id     TEXT NOT NULL,
-            slab_roots          BLOB NOT NULL,
-            quorum_signatures   BLOB NOT NULL,
-			consensus_status    BOOL NOT NULL,
-            PRIMARY KEY (ledger_id, block_height)
-        );""")
-    con.commit()
-    con.close()
+    # if "ledger" not in r:
+    #     c.execute("""CREATE TABLE ledger (
+    #         meter_id           TEXT NOT NULL,
+    # 		meter_reading      REAL,
+    # 		reading_timestamp  INTEGER,
+    #         block_height        INTEGER NOT NULL,
+    #         block_hash          BLOB NOT NULL,
+    #         prev_block_hash     BLOB NOT NULL,
+    #         timestamp           INTEGER NOT NULL,
+    #         quorum_slice_id     TEXT NOT NULL,
+    #         slab_roots          BLOB NOT NULL,
+    #         quorum_signatures   BLOB NOT NULL,
+    # 		consensus_status    BOOL NOT NULL,
+    #         PRIMARY KEY (ledger_id, block_height)
+    #     );""")
+    # con.commit()
+    # con.close()
 
 # ======================
 # CLIENT FLOW
 # ======================
 
 def get_container_ip():
+    if os.getenv("EXTERNAL_HOST"):
+        return os.getenv("EXTERNAL_HOST")
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))   # no packets sent
     ip = s.getsockname()[0]
@@ -168,7 +192,7 @@ def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info)
 				aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 			)
 
-			soc.settimeout(60)
+			soc.settimeout(10)
 			data = aes_decrypt(aes_key, soc.recv(1024))
 			print(f"[{ASSIGNED_ID}] Response from Quorum Peer Node {node_id}: {data.split('|')[0]}, {data.split('|')[0] == 'SUCCESS'}")
 			if data.split('|')[0] == "SUCCESS":
@@ -310,7 +334,7 @@ def handle_client(conn, addr):
 		data = aes_decrypt(aes_key, sock.recv(2048))
 
 		ca_msg, ca_sig = data.split("|", 1)
-		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 			print(f"[{ASSIGNED_ID}] CA signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -322,7 +346,7 @@ def handle_client(conn, addr):
 		sock.close()
 		# Connecting to CA to get the public key of the client node ============== END
 		# Verfyfy client signature
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Quorum Client signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -365,9 +389,9 @@ def handle_client(conn, addr):
 				sock.sendall(
 					aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}")
 				)
-				data = aes_decrypt(aes_key, sock.recv(4096))
+				data = aes_decrypt(aes_key, recv_all(sock))
 				ca_msg, ca_sig = data.split("|", 1)
-				if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+				if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 					print(f"[{ASSIGNED_ID}] CA signature verification failed for selected peers")
 					sock.close()
 					break
@@ -425,7 +449,7 @@ def handle_client(conn, addr):
 		data = aes_decrypt(aes_key, sock.recv(2048))
 
 		ca_msg, ca_sig = data.split("|", 1)
-		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 			print("CA signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -438,7 +462,7 @@ def handle_client(conn, addr):
 		sock.close()
 		# Connecting to CA to get the public key of the client node ============== END
 		# Verfyfy client signature
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Peer Node signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -495,7 +519,7 @@ def handle_client(conn, addr):
 		# Verify client signature
 		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
 		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Meter Node signature verification failed for reading submission")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -562,7 +586,7 @@ def handle_client(conn, addr):
 			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 			conn.close()
 			return
-		if not rsa_verify(requester_info['e_c'], requester_info['n_c'], client_msg, int(client_sig)):
+		if not rsa_verify(requester_info['e_c'], requester_info['n_c'], client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Peer validate sig failed from {c_assigned_id} for {base_meter_id}")
 			response_data = "REJECTED"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -609,7 +633,7 @@ def handle_client(conn, addr):
 def start_server():
 	sock = socket.socket()
 	sock.bind(("0.0.0.0", 0))
-	sock.listen(5)
+	sock.listen(64)
 	global HOST, PORT
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]

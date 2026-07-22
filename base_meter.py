@@ -55,28 +55,35 @@ PEER_CHAIN_STATE = dict()
 
 # Quorum Sizes
 
-METER_COUNT = 24 #quorum meter count
+METER_COUNT = 30 #quorum meter count
 UTILITY_COUNT = 4 #quorum utility count
 QUORUM_PEER_SIZE = 7 #quorum meter peer count
 
-BLOCK_HEIGHT_LIMIT = 5
+BLOCK_HEIGHT_LIMIT = 5 # number of blocks to generate before stopping (for testing)
 
 # ======================
 # CLIENT FLOW
 # ======================
 
 def get_container_ip():
+    if os.getenv("EXTERNAL_HOST"):
+        return os.getenv("EXTERNAL_HOST")
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.connect(("8.8.8.8", 80))   # no packets sent
     ip = s.getsockname()[0]
     s.close()
     return ip
 
-def recv_all(sock, bufsize=4096, timeout=1.0):
+def recv_all(sock, bufsize=4096, inter_timeout=0.5):
 	chunks = []
 	original_timeout = sock.gettimeout()
-	sock.settimeout(timeout)
 	try:
+		sock.settimeout(30.0)  # wait up to 30s for the first byte (CA may be slow)
+		chunk = sock.recv(bufsize)
+		if not chunk:
+			return b""
+		chunks.append(chunk)
+		sock.settimeout(inter_timeout)  # short gap between subsequent chunks
 		while True:
 			chunk = sock.recv(bufsize)
 			if not chunk:
@@ -138,14 +145,6 @@ def connect_to_quorum_node_thread(quorum_key, node_id, node_info):
 
 
 def connect_to_quorum_node(quorum_key, quorum_slice):
-	# for node_id, node_info in quorum_slice.items():
-	# 	threading.Thread(
-	# 		target=connect_to_quorum_node_thread,
-	# 		args=(quorum_key, node_id, node_info),
-	# 		daemon=True
-	# 	).start()
-	# 	time.sleep(random.uniform(0.5, 1))
-
 	threads = []
 	for node_id, node_info in quorum_slice.items():
 		t = threading.Thread(
@@ -157,10 +156,13 @@ def connect_to_quorum_node(quorum_key, quorum_slice):
 		threads.append(t)
 		time.sleep(random.uniform(0.5, 1))
 
-	# Wait for all peer-connection threads to finish (with a sensible timeout per thread)
+	# Single shared deadline — threads run in parallel so 60s covers all of them,
+	# not 70s × N which would compound to 700s for 10 nodes.
+	deadline = time.time() + 60
 	for t in threads:
+		remaining = max(0.1, deadline - time.time())
 		try:
-			t.join(timeout=70)
+			t.join(timeout=remaining)
 		except RuntimeError:
 			continue
 
@@ -174,7 +176,7 @@ QUORUM_THRESHOLD = 0.66
 
 def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 	try:
-		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=30)
+		soc = socket.create_connection((peer_info['ip'], int(peer_info['port'])), timeout=5)
 		conn_status, aes_key = initial_channel_setup(soc)
 		if not conn_status:
 			soc.close()
@@ -182,7 +184,7 @@ def _consult_single_peer(peer_id, peer_info, msg, results, lock):
 				results[peer_id] = False
 			return
 		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
-		soc.settimeout(60)
+		soc.settimeout(8)
 		resp = aes_decrypt(aes_key, soc.recv(1024))
 		with lock:
 			results[peer_id] = resp.split("|")[0] == "SUCCESS"
@@ -211,14 +213,34 @@ def consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_va
 		)
 		t.start()
 		threads.append(t)
+	deadline = time.time() + 20
 	for t in threads:
-		t.join(timeout=70)
+		remaining = max(0.1, deadline - time.time())
+		t.join(timeout=remaining)
 	agreed = sum(1 for v in results.values() if v)
 	return agreed, len(peers)
 
-def _broadcast_meter_req(node_id, node_info, msg, results, lock):
+class ByteCountSocket:
+	def __init__(self, sock):
+		self._s = sock
+		self.tx = 0
+		self.rx = 0
+	def sendall(self, data):
+		self.tx += len(data)
+		return self._s.sendall(data)
+	def recv(self, n):
+		data = self._s.recv(n)
+		self.rx += len(data)
+		return data
+	def settimeout(self, t): return self._s.settimeout(t)
+	def close(self):         return self._s.close()
+	def __getattr__(self, name): return getattr(self._s, name)
+
+def _broadcast_meter_req(node_id, node_info, msg, results, lock, node_latencies=None, node_bytes=None):
+	t0 = time.time()
 	try:
-		soc = socket.create_connection((node_info['ip'], int(node_info['port'])), timeout=30)
+		raw = socket.create_connection((node_info['ip'], int(node_info['port'])), timeout=5)
+		soc = ByteCountSocket(raw)
 		conn_status, aes_key = initial_channel_setup(soc)
 		if not conn_status:
 			soc.close()
@@ -226,10 +248,17 @@ def _broadcast_meter_req(node_id, node_info, msg, results, lock):
 				results[node_id] = False
 			return
 		soc.sendall(aes_encrypt(aes_key, f"{msg}|{rsa_sign(CL_D, CL_N, msg)}"))
-		soc.settimeout(60)
+		soc.settimeout(15)
 		resp = aes_decrypt(aes_key, soc.recv(1024))
+		success = resp.split("|")[0] == "SUCCESS"
 		with lock:
-			results[node_id] = resp.split("|")[0] == "SUCCESS"
+			results[node_id] = success
+			if node_latencies is not None:
+				# Record latency for any node that responded (SUCCESS or REJECTED)
+				# Timeouts and connection failures never reach this line
+				node_latencies[node_id] = round(time.time() - t0, 3)
+			if node_bytes is not None:
+				node_bytes[node_id] = (soc.tx, soc.rx)
 		soc.close()
 	except Exception as e:
 		print(f"[{ASSIGNED_ID}] Error sending to {node_id}: {e}")
@@ -241,7 +270,11 @@ def quorum_consensus_init():
 	block_height = 0
 	prev_10m_hash = "0" * 64
 	latencies = []
-	bytes_per_round = []
+
+	all_successful_lats = []
+	total_consensus_tx = 0
+	total_consensus_rx = 0
+	last_accepted_ratio = 0
 
 	while block_height < BLOCK_HEIGHT_LIMIT:
 		METER_READING_DATA = read_meter(hw)
@@ -257,25 +290,29 @@ def quorum_consensus_init():
 		}
 		current_hash = data_enc(block_content)
 		consumption_value_hash = block_content["consumption_value_hash"]
-		# data_enc(METER_READING_DATA)
 		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{consumption_value_hash},{prev_10m_hash}"
 
 		results = {}
+		node_latencies = {}
+		node_bytes = {}
 		lock = threading.Lock() # mutually exclusive lock for updating results dict from multiple threads
 		validated_nodes = [nid for nid in QUORUM_SLICE if QUORUM_SLICE[nid]['validated'] is True]
 
-		t_start = time.time()
 		threads = []
 		for node_id in validated_nodes:
 			t = threading.Thread(
 				target=_broadcast_meter_req,
-				args=(node_id, QUORUM_SLICE[node_id], msg, results, lock),
+				args=(node_id, QUORUM_SLICE[node_id], msg, results, lock, node_latencies, node_bytes),
 				daemon=True
 			)
 			t.start()
 			threads.append(t)
+			time.sleep(0.1)
+		t_start = time.time()
+		deadline = t_start + 25
 		for t in threads:
-			t.join(timeout=65)
+			remaining = max(0.1, deadline - time.time())
+			t.join(timeout=remaining)
 
 		total = len(validated_nodes)
 		agreed = sum(1 for v in results.values() if v)
@@ -284,20 +321,41 @@ def quorum_consensus_init():
 
 		round_latency = round(time.time() - t_start, 3)
 		latencies.append(round_latency)
-		bytes_per_round.append(len(msg.encode()))
 
-		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | latency: {round_latency}s | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
+		# Per-node latency for successful responders only
+		successful_lats = list(node_latencies.values())
+		all_successful_lats.extend(successful_lats)
+		if successful_lats:
+			avg_node_lat = round(sum(successful_lats) / len(successful_lats), 3)
+			min_node_lat = round(min(successful_lats), 3)
+			max_node_lat = round(max(successful_lats), 3)
+		else:
+			avg_node_lat = min_node_lat = max_node_lat = 0
 
+		round_tx = sum(v[0] for v in node_bytes.values())
+		round_rx = sum(v[1] for v in node_bytes.values())
+		round_bytes_total = round_tx + round_rx
+		total_consensus_tx += round_tx
+		total_consensus_rx += round_rx
+
+		print(f"[{ASSIGNED_ID}] Block {block_height} | consensus: {agreed}/{total} ({ratio*100:.1f}%) | round: {round_latency}s | node_lat avg={avg_node_lat}s min={min_node_lat}s max={max_node_lat}s | bytes tx={round_tx} rx={round_rx} total={round_bytes_total} | {'ACCEPTED — advancing chain' if accepted else 'REJECTED — block dropped'}")
+
+		last_accepted_ratio = ratio
 		if accepted:
 			prev_10m_hash = current_hash
 			block_height += 1
+		else:
+			break
 
 		time.sleep(10)
 
-	avg_latency = round(sum(latencies) / len(latencies), 3) if latencies else 0
-	avg_bytes   = round(sum(bytes_per_round) / len(bytes_per_round), 1) if bytes_per_round else 0
-	print(f"[{ASSIGNED_ID}] Block generation complete — {BLOCK_HEIGHT_LIMIT} blocks committed to ledger.")
-	print(f"[METRIC] meter={ASSIGNED_ID} BlockHeight={BLOCK_HEIGHT_LIMIT} quorum_meter_count={METER_COUNT} quorum_utility_count={UTILITY_COUNT} peer_size={QUORUM_PEER_SIZE} consensus_pct={round(ratio*100, 1)} threshold={QUORUM_THRESHOLD} avg_consensus_latency_s={avg_latency} avg_bytes_per_round={avg_bytes}")
+	avg_latency     = round(sum(latencies) / len(latencies), 3) if latencies else 0
+	avg_node_latency = round(sum(all_successful_lats) / len(all_successful_lats), 3) if all_successful_lats else 0
+	total_consensus_bytes = total_consensus_tx + total_consensus_rx
+	status = "complete" if block_height == BLOCK_HEIGHT_LIMIT else "stopped — consensus failed"
+	print(f"[{ASSIGNED_ID}] Block generation {status} — {block_height} blocks committed to ledger.")
+	print(f"[METRIC] meter={ASSIGNED_ID} BlockHeight={block_height} quorum_meter_count={METER_COUNT} quorum_utility_count={UTILITY_COUNT} peer_size={QUORUM_PEER_SIZE} consensus_pct={round(last_accepted_ratio*100, 1)} threshold={QUORUM_THRESHOLD} avg_round_latency_s={avg_latency} avg_successful_node_latency_s={avg_node_latency} total_consensus_tx_bytes={total_consensus_tx} total_consensus_rx_bytes={total_consensus_rx} total_consensus_bytes={total_consensus_bytes}")
+	os._exit(0)
 
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
@@ -309,7 +367,7 @@ def proceed_init():
 	conn_status, aes_key = initial_channel_setup(sock)
 	if not conn_status:
 		sock.close()
-		exit()
+		os._exit(1)
 
 	msg = f"{ASSIGNED_ID},INIT"
 	sock.sendall(
@@ -318,10 +376,10 @@ def proceed_init():
 
 	data = aes_decrypt(aes_key, recv_all(sock))
 	ca_msg, ca_sig = data.split("|", 1)
-	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+	if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 		print("CA signature verification failed")
 		sock.close()
-		exit()
+		os._exit(1)
 
 	utility, base_meters = list(), list()
 	for i in (ca_msg.split(";")):
@@ -341,10 +399,10 @@ def proceed_init():
 
 	data = aes_decrypt(aes_key, recv_all(sock))
 	ca_msg, ca_sig = data.split("|", 1)
-	if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+	if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 		print("CA signature verification failed")
 		sock.close()
-		exit()
+		os._exit(1)
 	global QUORUM_VERIFICATION_KEY	
 	QUORUM_VERIFICATION_KEY, nodes = ca_msg.split(";")[0], ca_msg.split(";")[1:]
 	sock.close()
@@ -545,7 +603,7 @@ def handle_client(conn, addr):
 		data = aes_decrypt(aes_key, sock.recv(2048))
 
 		ca_msg, ca_sig = data.split("|", 1)
-		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 			print(f"[{ASSIGNED_ID}] CA signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -557,7 +615,7 @@ def handle_client(conn, addr):
 		sock.close()
 		# Connecting to CA to get the public key of the client node ============== END
 		# Verfyfy client signature
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Quorum Client signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -602,7 +660,7 @@ def handle_client(conn, addr):
 				)
 				data = aes_decrypt(aes_key, recv_all(sock))
 				ca_msg, ca_sig = data.split("|", 1)
-				if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+				if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 					print(f"[{ASSIGNED_ID}] CA signature verification failed for selected peers")
 					sock.close()
 					break
@@ -660,7 +718,7 @@ def handle_client(conn, addr):
 		data = aes_decrypt(aes_key, sock.recv(2048))
 
 		ca_msg, ca_sig = data.split("|", 1)
-		if not rsa_verify(CA_E, CA_N, ca_msg, int(ca_sig)):
+		if not rsa_verify(CA_E, CA_N, ca_msg, ca_sig):
 			print("CA signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -673,7 +731,7 @@ def handle_client(conn, addr):
 		sock.close()
 		# Connecting to CA to get the public key of the client node ============== END
 		# Verfyfy client signature
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Peer Node signature verification failed")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -731,7 +789,7 @@ def handle_client(conn, addr):
 		# Verify client signature
 		client_e = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['e_c']
 		client_n = SERVING_QUORUM_CONNECTIONS[c_assigned_id]['n_c']
-		if not rsa_verify(client_e, client_n, client_msg, int(client_sig)):
+		if not rsa_verify(client_e, client_n, client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Meter Node signature verification failed for reading submission")
 			response_data = "ERROR"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -798,7 +856,7 @@ def handle_client(conn, addr):
 			conn.sendall(aes_encrypt(aes_key_cli, f"{response_data}|{sig_s}"))
 			conn.close()
 			return
-		if not rsa_verify(requester_info['e_c'], requester_info['n_c'], client_msg, int(client_sig)):
+		if not rsa_verify(requester_info['e_c'], requester_info['n_c'], client_msg, client_sig):
 			print(f"[{ASSIGNED_ID}] Peer validate sig failed from {c_assigned_id} for {base_meter_id}")
 			response_data = "REJECTED"
 			sig_s = rsa_sign(CL_D, CL_N, response_data)
@@ -845,7 +903,7 @@ def handle_client(conn, addr):
 def start_server():
 	sock = socket.socket()
 	sock.bind(("0.0.0.0", 0))
-	sock.listen(5)
+	sock.listen(128)
 	global HOST, PORT
 	HOST = get_container_ip()
 	PORT = sock.getsockname()[1]

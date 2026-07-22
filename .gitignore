@@ -11,7 +11,13 @@ __pycache__/
 *.env
 *.db
 *.png
+*.gz
 
 primes50.txt
 Notes.txt
 Notes1.txt
+
+*.sh
+logs/
+monitor_to_csv.py
+*.csv

@@ -59,8 +59,8 @@ def init_db():
             ASSIGNED_ID INTEGER,
             IP TEXT,
             PORT INTEGER,
-            N_C INTEGER,
-            E_C INTEGER,
+            N_C TEXT,
+            E_C TEXT,
             STAT BOOLEAN
             )""")
         for i in range(1000):
@@ -79,8 +79,8 @@ def init_db():
             SERVING_METERS TEXT,
             QUORUM_VALIDSTION_KEY TEXT,
             QUORUM_SLICE TEXT,
-            N_C INTEGER,
-            E_C INTEGER,
+            N_C TEXT,
+            E_C TEXT,
             STAT BOOLEAN
             )""")
         for i in range(1000):
@@ -149,7 +149,7 @@ def update_utility_status(uid, status, id=None, ip=None, port=None, n_c=None, e_
     if status and ip is not None:
         c.execute(
             "UPDATE UTILITY_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE UTILITY_ID=?",
-            (status, ip, port, n_c, e_c, uid)
+            (status, ip, port, str(n_c), str(e_c), uid)
         )
     if status != 1:
         c.execute(
@@ -192,7 +192,7 @@ def update_base_meter_status(uid, status, id=None, ip=None, port=None, n_c=None,
     if status and ip is not None:
         c.execute(
             "UPDATE BASE_METER_TABLE SET STAT=?, IP=?, PORT=?, N_C=?, E_C=? WHERE BASE_METER_ID=?",
-            (status, ip, port, n_c, e_c, uid)
+            (status, ip, port, str(n_c), str(e_c), uid)
         )
     if status != 1:
         c.execute(
@@ -239,25 +239,25 @@ def client_register(conn, addr, aes_key, data):
 
     n_c, e_c = map(
         int,
-        aes_decrypt(aes_key, conn.recv(1024)).split(",")
+        aes_decrypt(aes_key, conn.recv(4096)).split(",")
     )
     # RSA auth exchange - END
 
     sig_s = rsa_sign(d_s, n_s, u_asi_id)
     conn.sendall(aes_encrypt(aes_key, f"{u_asi_id}|{sig_s}"))
 
-    c_msg, c_sig = aes_decrypt(aes_key, conn.recv(1024)).split("|", 1)
+    c_msg, c_sig = aes_decrypt(aes_key, conn.recv(4096)).split("|", 1)
     print(c_msg, c_sig)
 
     if client_type == "UTILITY":
-        if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+        if not rsa_verify(e_c, n_c, c_msg, c_sig):
             update_utility_status(uid, 0)
             conn.close()
             return
         else:
             update_utility_status(uid, 1, ip=c_msg.split(":")[0], port=c_msg.split(":")[-1], n_c=n_c, e_c=e_c)
     if client_type == "BASE_METER":
-        if not rsa_verify(e_c, n_c, c_msg, int(c_sig)):
+        if not rsa_verify(e_c, n_c, c_msg, c_sig):
             update_base_meter_status(uid, 0)
             conn.close()
             return
@@ -271,7 +271,6 @@ def client_register(conn, addr, aes_key, data):
 def node_secondary_requests_validation(data):
     c_msg, c_sig = data.split("|", 1)
     assigned_id = c_msg.split(",")[0]
-    sig = int(c_sig)
     n_c, e_c = None, None
 
     # Fetch client's public key from DB
@@ -289,20 +288,35 @@ def node_secondary_requests_validation(data):
         )
     row = c.fetchone()
     con.close()
-    if row:
-        n_c, e_c = row
-
-    if n_c is None or e_c is None:
+    if not row:
+        print(f"[DIAG] node_secondary_requests_validation: no DB row for {assigned_id}", flush=True)
+        return False
+    raw_n, raw_e = row[0], row[1]
+    print(f"[DIAG] node_secondary_requests_validation: {assigned_id} raw_n={str(raw_n)[:20]}... raw_e={raw_e}", flush=True)
+    try:
+        n_c, e_c = int(raw_n), int(raw_e)
+    except (TypeError, ValueError) as exc:
+        print(f"[DIAG] node_secondary_requests_validation: int() failed for {assigned_id}: {exc}", flush=True)
         return False
 
-    if not rsa_verify(e_c, n_c, c_msg, sig):
+    if not rsa_verify(e_c, n_c, c_msg, c_sig):
+        print(f"[DIAG] node_secondary_requests_validation: rsa_verify FAILED for {assigned_id}", flush=True)
         return False
-    print("[✓] Client with ASSIGNED_ID", assigned_id, "verified")
+    print(f"[✓] Client with ASSIGNED_ID {assigned_id} verified", flush=True)
     return True
 
 def handle_client(conn, addr):
-    # try:
-    print(f"[+] Client connected from {addr}")
+    try:
+        _handle_client_inner(conn, addr)
+    except Exception as exc:
+        import traceback
+        print(f"[ERROR] handle_client from {addr}: {exc}", flush=True)
+        traceback.print_exc()
+    finally:
+        conn.close()
+
+def _handle_client_inner(conn, addr):
+    print(f"[+] Client connected from {addr}", flush=True)
     # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - START
     shared_int = dh_server_exchange(conn)
     # print("Shared Integer:", shared_int)
@@ -314,9 +328,9 @@ def handle_client(conn, addr):
         return
     # SERVER - DH Key Exchange | AES Key Derivation | AES Channel Validation - END
 
-    data = aes_decrypt(aes_key, conn.recv(1024))
+    data = aes_decrypt(aes_key, conn.recv(4096))
     # Client Registration Flow
-    if not data.split("|")[-1].isdigit():
+    if "|" not in data:
         client_register(conn, addr, aes_key, data)
     else:
         # Request contains, assigned id and signature
@@ -353,9 +367,9 @@ def handle_client(conn, addr):
             data = str(';'.join(map(str, response_data)))
             sig_s = rsa_sign(CA_D, CA_N, data)
             conn.sendall(aes_encrypt(aes_key, f"{data}|{sig_s}"))
-            data = aes_decrypt(aes_key, conn.recv(1024))
+            data = aes_decrypt(aes_key, conn.recv(4096))
             # print("Received Data:", data)
-            if not data.split("|")[-1].isdigit():
+            if "|" not in data:
                 client_register(conn, addr, aes_key, data)
             else:
                 head = data.split("|", 1)[0]
@@ -562,6 +576,7 @@ def start_server():
     print("Initializing DB...")
     init_db()
     s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind((HOST, PORT))
     s.listen()
     print("Certifying Authority STARTED at", s.getsockname())
