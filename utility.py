@@ -53,6 +53,11 @@ QUORUM_PEER_SIZE = 5
 
 QUORUM_THRESHOLD = 0.66
 
+# TLS-MDMS baseline: when set, this MDMS accepts a verified reading on its own
+# (signature + chain check + store) without consulting sub-quorum peers. Mirror
+# of BASELINE_MODE in base_meter.py; enable with BASELINE_MODE=true.
+BASELINE_MODE = os.getenv("BASELINE_MODE", "false").lower() == "true"
+
 def recv_all(sock, bufsize=4096, inter_timeout=0.5):
 	chunks = []
 	original_timeout = sock.gettimeout()
@@ -548,15 +553,19 @@ def handle_client(conn, addr):
 		}
 		new_hash = data_enc(block_content)
 
-		# Part 2: consult sub-quorum peers
-		agreed, total = consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_value_hash, prev_10m_hash)
-		if total > 0:
-			peer_ratio = agreed / total
-			peer_accepted = peer_ratio >= QUORUM_THRESHOLD
-			print(f"[{ASSIGNED_ID}] Block {block_height} peer consensus: {agreed}/{total} ({peer_ratio*100:.1f}%)")
-		else:
+		# Part 2: consult sub-quorum peers (skipped in TLS-MDMS baseline — single MDMS, no quorum)
+		if BASELINE_MODE:
 			peer_accepted = True
-			print(f"[{ASSIGNED_ID}] Block {block_height} no peers available — accepting on Part 1 alone")
+			print(f"[{ASSIGNED_ID}] Block {block_height} baseline mode — accepting on signature + chain check alone")
+		else:
+			agreed, total = consult_peers(c_assigned_id, block_height, reading_timestamp, consumption_value_hash, prev_10m_hash)
+			if total > 0:
+				peer_ratio = agreed / total
+				peer_accepted = peer_ratio >= QUORUM_THRESHOLD
+				print(f"[{ASSIGNED_ID}] Block {block_height} peer consensus: {agreed}/{total} ({peer_ratio*100:.1f}%)")
+			else:
+				peer_accepted = True
+				print(f"[{ASSIGNED_ID}] Block {block_height} no peers available — accepting on Part 1 alone")
 
 		if peer_accepted:
 			SERVING_QUORUM_CONNECTIONS[c_assigned_id]['last_10m_hash'] = new_hash

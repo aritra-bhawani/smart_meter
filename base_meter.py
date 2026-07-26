@@ -61,6 +61,11 @@ QUORUM_PEER_SIZE = 7 #quorum meter peer count
 
 BLOCK_HEIGHT_LIMIT = 5 # number of blocks to generate before stopping (for testing)
 
+# TLS-MDMS baseline: report signed encrypted readings to a single MDMS with no
+# quorum voting. Used to measure the incremental cost of consensus vs. plain
+# secure reporting. Enable with BASELINE_MODE=true (meters AND utilities).
+BASELINE_MODE = os.getenv("BASELINE_MODE", "false").lower() == "true"
+
 # ======================
 # CLIENT FLOW
 # ======================
@@ -357,6 +362,83 @@ def quorum_consensus_init():
 	print(f"[METRIC] meter={ASSIGNED_ID} BlockHeight={block_height} quorum_meter_count={METER_COUNT} quorum_utility_count={UTILITY_COUNT} peer_size={QUORUM_PEER_SIZE} consensus_pct={round(last_accepted_ratio*100, 1)} threshold={QUORUM_THRESHOLD} avg_round_latency_s={avg_latency} avg_successful_node_latency_s={avg_node_latency} total_consensus_tx_bytes={total_consensus_tx} total_consensus_rx_bytes={total_consensus_rx} total_consensus_bytes={total_consensus_bytes}")
 	os._exit(0)
 
+
+def tls_mdms_baseline():
+	# TLS-MDMS baseline: the meter sends signed, encrypted readings to a SINGLE MDMS
+	# with no quorum voting. Reuses the exact message, secure channel, byte-counter
+	# and latency path as consensus (_broadcast_meter_req) so a comparison against
+	# quorum_consensus_init isolates the incremental cost of consensus. The MDMS side
+	# skips peer consultation when BASELINE_MODE is set (see utility.py).
+	hw = start_meter(base_rate=0.002, variability=0.0001)  # simulate a meter reading
+	block_height = 0
+	prev_10m_hash = "0" * 64
+	latencies = []
+	total_tx = 0
+	total_rx = 0
+	accepted_count = 0
+
+	# Pick one validated MDMS (utility) from the slice to report to.
+	mdms_nodes = [nid for nid in QUORUM_SLICE if str(nid).startswith("u_") and QUORUM_SLICE[nid]['validated'] is True]
+	if not mdms_nodes:
+		print(f"[{ASSIGNED_ID}] [BASELINE] no validated MDMS available — aborting")
+		os._exit(1)
+	mdms_id = mdms_nodes[0]
+	mdms_info = QUORUM_SLICE[mdms_id]
+	print(f"[{ASSIGNED_ID}] [BASELINE] reporting to single MDMS {mdms_id} (no quorum)")
+
+	while block_height < BLOCK_HEIGHT_LIMIT:
+		METER_READING_DATA = read_meter(hw)
+		print(f"[{ASSIGNED_ID}] Meter Reading: {METER_READING_DATA}")
+
+		block_content = {
+			"ledger_id": ASSIGNED_ID,
+			"quorum_slice_id": ASSIGNED_ID,
+			"block_height": block_height,
+			"timestamp": METER_READING_DATA['timestamp'],
+			"consumption_value_hash": data_enc(METER_READING_DATA['value']),
+			"prev_10m_block_hash": prev_10m_hash
+		}
+		current_hash = data_enc(block_content)
+		consumption_value_hash = block_content["consumption_value_hash"]
+		msg = f"{ASSIGNED_ID},METER_REQ,{block_height},{METER_READING_DATA['timestamp']},{METER_READING_DATA['value']},{consumption_value_hash},{prev_10m_hash}"
+
+		results = {}
+		node_latencies = {}
+		node_bytes = {}
+		lock = threading.Lock()
+
+		# Single-node report; per-reading latency is the MDMS round-trip (no stagger,
+		# no quorum), so it is unambiguous unlike the quorum round latency.
+		_broadcast_meter_req(mdms_id, mdms_info, msg, results, lock, node_latencies, node_bytes)
+
+		accepted = results.get(mdms_id, False)
+		lat = node_latencies.get(mdms_id, 0)
+		tx, rx = node_bytes.get(mdms_id, (0, 0))
+		total_tx += tx
+		total_rx += rx
+		latencies.append(lat)
+
+		print(f"[{ASSIGNED_ID}] Baseline Block {block_height} | mdms={mdms_id} | latency={lat}s | bytes tx={tx} rx={rx} total={tx + rx} | {'ACCEPTED' if accepted else 'REJECTED'}")
+
+		if accepted:
+			prev_10m_hash = current_hash
+			block_height += 1
+			accepted_count += 1
+		else:
+			break
+
+		time.sleep(10)
+
+	avg_latency = round(sum(latencies) / len(latencies), 3) if latencies else 0
+	total_bytes = total_tx + total_rx
+	success_pct = round(accepted_count / BLOCK_HEIGHT_LIMIT * 100, 1)
+	status = "complete" if block_height == BLOCK_HEIGHT_LIMIT else "stopped — MDMS rejected"
+	print(f"[{ASSIGNED_ID}] Baseline generation {status} — {block_height} readings acknowledged.")
+	# Same field names as the consensus [METRIC] line so derive_experiment_metrics.py
+	# parses baseline runs unchanged; mode=baseline distinguishes them.
+	print(f"[METRIC] mode=baseline meter={ASSIGNED_ID} BlockHeight={block_height} quorum_meter_count=0 quorum_utility_count=1 peer_size=0 consensus_pct={success_pct} threshold=1.0 avg_round_latency_s={avg_latency} avg_successful_node_latency_s={avg_latency} total_consensus_tx_bytes={total_tx} total_consensus_rx_bytes={total_rx} total_consensus_bytes={total_bytes}")
+	os._exit(0)
+
 def proceed_init():
 	print(f"[{ASSIGNED_ID}] proceeding to send INIT...")
 	time.sleep(random.randint(10,20))  # simulate delay
@@ -423,7 +505,10 @@ def proceed_init():
 	# TODO: vlidate the quorum status from the CA
 
 	time.sleep(random.uniform(10, 30))
-	quorum_consensus_init()
+	if BASELINE_MODE:
+		tls_mdms_baseline()
+	else:
+		quorum_consensus_init()
 
 def connect_to_quorum_peer_thread(c_assigned_id, quorum_key, node_id, node_info):
 	try_count = 0

@@ -29,9 +29,10 @@ import statistics
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 PER_RUN_HEADER = [
-    "experiment", "run", "meter_count", "utility_count", "peer_size",
+    "experiment", "run", "log_path", "meter_count", "utility_count", "peer_size",
     "block_height", "consensus_pct",
     "consensus_tx_bytes", "consensus_rx_bytes", "consensus_total_bytes",
+    "avg_round_latency_s", "avg_successful_node_latency_s",
     "avg_cpu_pct", "peak_cpu_pct", "peak_mem_kb", "monitor_duration_ms",
     "complete",
 ]
@@ -42,6 +43,7 @@ SUMMARY_HEADER = [
     "consensus_total_bytes_mean", "consensus_total_bytes_std",
     "consensus_total_kb_mean",        # bytes/1000, ready to plot directly on a kB axis
     "bytes_per_node_mean",            # total / (meter_count + utility_count)
+    "avg_node_latency_s_mean", "avg_node_latency_s_std", "avg_node_latency_s_median",
     "avg_cpu_pct_mean", "avg_cpu_pct_std", "avg_cpu_pct_median",
     "peak_mem_kb_mean",
 ]
@@ -86,8 +88,10 @@ def parse_run(run_dir):
         "consensus_tx_bytes":    _f(r"total_consensus_tx_bytes=(\d+)", metric, int),
         "consensus_rx_bytes":    _f(r"total_consensus_rx_bytes=(\d+)", metric, int),
         "consensus_total_bytes": _f(r"total_consensus_bytes=(\d+)", metric, int),
+        "avg_round_latency_s":            _f(r"avg_round_latency_s=([\d.]+)", metric),
+        "avg_successful_node_latency_s":  _f(r"avg_successful_node_latency_s=([\d.]+)", metric),
         # cpu / mem: reliable source = [MONITOR] (per-process /proc/<PID>)
-        "avg_cpu_pct":           _f(r"avg_cpu_pct=([\d.]+)", monitor),
+        "avg_cpu_pct":           _f(r"avg_cpu_pct=(-?[\d.]+)", monitor),
         "peak_cpu_pct":          _f(r"peak_cpu_pct=([\d.]+)", monitor),
         "peak_mem_kb":           _f(r"peak_mem_kb=(\d+)", monitor, int),
         "monitor_duration_ms":   _f(r"duration_ms=(\d+)", monitor, int),
@@ -113,6 +117,9 @@ def collect(logs_dir):
             continue
         parsed["experiment"] = exp
         parsed["run"] = run
+        # Path to the exact source file this row's data was extracted from,
+        # relative to the repo root — so any row can be traced back by hand.
+        parsed["log_path"] = os.path.relpath(log_path, ROOT)
         # Fall back to the directory name for meter_count if the run never
         # produced a [METRIC] line (failed runs still carry the size in the path).
         if parsed["meter_count"] is None:
@@ -153,18 +160,23 @@ def _round(x, n):
 
 
 def write_summary(rows, out_path):
-    # Aggregate only complete runs, grouped by meter_count.
+    # Aggregate only complete runs, grouped by experiment (directory name) — NOT
+    # by meter_count alone. Multiple experiment folders can share the same
+    # meter_count (e.g. all baseline runs are meter_count=0), so grouping by
+    # meter_count would silently merge unrelated sweeps (e.g. a "baseline" and a
+    # "baseline_backup" archive) into one row.
     groups = {}
     for r in rows:
         if not r["complete"]:
             continue
-        groups.setdefault(r["meter_count"], []).append(r)
+        groups.setdefault(r["experiment"], []).append(r)
 
     with open(out_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(SUMMARY_HEADER)
-        for n in sorted(groups):
-            g = groups[n]
+        for exp in sorted(groups, key=lambda e: (groups[e][0]["meter_count"] or 0, e)):
+            g = groups[exp]
+            n = g[0]["meter_count"]
             util = _mean([r["utility_count"] for r in g]) or 0
             total_nodes = n + util
             tot_bytes = [r["consensus_total_bytes"] for r in g]
@@ -183,6 +195,9 @@ def write_summary(rows, out_path):
                 _round(_std(tot_bytes), 1),
                 _round((_mean(tot_bytes) or 0) / 1000, 2),   # consensus_total_kb_mean
                 _round(_mean(bytes_per_node), 1),
+                _round(_mean([r["avg_successful_node_latency_s"] for r in g]), 3),
+                _round(_std([r["avg_successful_node_latency_s"] for r in g]), 3),
+                _round(_median([r["avg_successful_node_latency_s"] for r in g]), 3),
                 _round(_mean([r["avg_cpu_pct"] for r in g]), 2),
                 _round(_std([r["avg_cpu_pct"] for r in g]), 2),
                 _round(_median([r["avg_cpu_pct"] for r in g]), 2),
